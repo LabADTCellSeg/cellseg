@@ -18,96 +18,25 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import matplotlib
 
-from cellseg_utils import (
-    get_str_timestamp,
-    get_squares,
-    # unsplit_image,
-    my_train_test_split,
-    CellDataset,
-    get_training_augmentation,
-    get_validation_augmentation,
-    get_preprocessing,
-)
+from clearml import Task
+
+from cellseg_utils import get_str_timestamp, BCEDiceLoss
 
 matplotlib.use('TkAgg')
 
 
-def experiment(p):
-    fn_list = [v for v in os.listdir(p.dataset_dir) if v.endswith('.nd2')]
-    fn_list.sort()
-
-    W = H = 5
-    fp = osp.join(p.dataset_dir, fn_list[0])
-    np_data = nd2.imread(fp)
-    c, w, h = np_data.shape
-    figsize = (W * c + 1, H)
-
-    print(f'total images: {len(fn_list)}')
-    print(f'image shape (c, w, h): {np_data.shape}')
-
-    orig_size = (w, h)
-    square_w, square_h = p.square_a, p.square_a
-    square_size = (square_w, square_h)
-
-    full_size, full_size_with_borders, squares = get_squares(orig_size,
-                                                             square_size,
-                                                             p.border)
-
-    print(f'orig_size: {orig_size}')
-    print(f'full_size: {full_size}')
-    print(f'full_size_with_borders: {full_size_with_borders}')
-    # pprint(core_square_sizes)
-    print(f'squares: {len(squares)}')
-
-    pprint(squares[:2])
-    print('...')
-    pprint(squares[-2:])
-
-    images_fps = list()
-    masks_fps = list()
-    for fn in fn_list[:]:
-        images_fps.append(osp.join(p.dataset_dir, fn))
-        masks_fps.append(osp.join(p.masks_dir, f'{fn}mask.png'))
-    images_fps = np.array(images_fps)
-    masks_fps = np.array(masks_fps)
-
-    run_clear_ml = False
+def experiment(run_clear_ml=False, p=None, d=None):
+    if p.max_epochs != 0:
+        train_loader = DataLoader(d.train_dataset, batch_size=p.batch_size,
+                                  shuffle=True, num_workers=p.num_workers)
+        valid_loader = DataLoader(d.valid_dataset, batch_size=p.batch_size,
+                                  shuffle=False, num_workers=p.num_workers)
+    test_loader = DataLoader(d.test_dataset, batch_size=16,
+                             shuffle=False)
 
     timestamp = get_str_timestamp()
-
     log_dir = f'out/MSC/{p.model_name}_{p.ENCODER}_{timestamp}'
     os.makedirs(log_dir)
-
-    ans = my_train_test_split(images_fps, masks_fps, p.ratio_train, p.ratio_val)
-    X_train, X_val, X_test, y_train, y_val, y_test = ans
-    print(X_train.shape, X_val.shape, X_test.shape)
-
-    # preprocessing_fn = smp.encoders.get_preprocessing_fn(p.ENCODER, p.ENCODER_WEIGHTS)
-    preprocessing_fn = None
-    preprocessing = get_preprocessing(preprocessing_fn)
-
-    if p.max_epochs != 0:
-        train_dataset = CellDataset(X_train, y_train, squares,
-                                    p.border, p.channels, p.classes, full_size,
-                                    augmentation=get_training_augmentation(),
-                                    preprocessing=preprocessing)
-
-        valid_dataset = CellDataset(X_val, y_val, squares,
-                                    p.border, p.channels, p.classes, full_size,
-                                    augmentation=get_training_augmentation(),
-                                    preprocessing=preprocessing)
-
-    test_dataset = CellDataset(X_test, y_test, squares,
-                               p.border, p.channels, p.classes, full_size,
-                               augmentation=get_validation_augmentation(),
-                               preprocessing=preprocessing)
-    if p.max_epochs != 0:
-        train_loader = DataLoader(train_dataset, batch_size=p.batch_size,
-                                  shuffle=True, num_workers=p.num_workers)
-        valid_loader = DataLoader(valid_dataset, batch_size=p.batch_size,
-                                  shuffle=False, num_workers=p.num_workers)
-    test_loader = DataLoader(test_dataset, batch_size=1,
-                             shuffle=False)
 
     # create segmentation model with pretrained encoder
     if p.model_load_fp is None:
@@ -129,8 +58,11 @@ def experiment(p):
 
     # Dice/F1 score - https://en.wikipedia.org/wiki/S%C3%B8rensen%E2%80%93Dice_coefficient
     # IoU/Jaccard score - https://en.wikipedia.org/wiki/Jaccard_index
-    loss = smp.losses.DiceLoss(mode='multilabel')
-    loss.__name__ = 'dice'
+    # loss = smp.losses.DiceLoss('multilabel')
+    # loss.__name__ = 'dice'
+
+    loss = BCEDiceLoss(bce_weight=0.5)
+
     metrics = [
         smp.utils.metrics.IoU(threshold=0.5),
     ]
@@ -139,6 +71,9 @@ def experiment(p):
         dict(params=model.parameters(), lr=p.lr_first),
     ])
 
+    # a, b = next(iter(test_loader))
+    # ans = loss(b, b)
+    # print(ans)
     # create epoch runners
     # it is a simple loop of iterating over dataloader`s samples
     train_epoch = smp.utils.train.TrainEpoch(
@@ -166,7 +101,9 @@ def experiment(p):
         task = Task.init(project_name="CellSeg",
                          task_name=log_dir,
                          output_uri=True)
-        task.connect(p)
+        task.connect(vars(p))
+    else:
+        task = None
     writer = SummaryWriter(log_dir=log_dir)
 
     max_score = 0
@@ -209,40 +146,52 @@ def experiment(p):
     for k, v in test_logs.items():
         print(f"{' '.join(k.split('_')).title()}: {v:.2f}")
 
+    writer.close()
+    if run_clear_ml:
+        task.close()
+
     # visualize results of best saved model
     iou_metric_list = list()
 
     out_dir = os.path.join(log_dir, 'results')
     os.makedirs(out_dir, exist_ok=True)
-    for d in ['image', 'gt', 'pr', 'compare']:
-        os.makedirs(os.path.join(out_dir, d), exist_ok=True)
+    # for directory in ['image', 'gt', 'pr', 'compare']:
+    #     os.makedirs(os.path.join(out_dir, directory), exist_ok=True)
 
-    for n in tqdm(range(len(test_dataset))):
-        image, gt_mask = test_dataset[n]
-        gt_mask = gt_mask
+    W = H = 5
+    img_num = p.channels + 1 + d.test_dataset.classes
+    figsize = (W * img_num, H)
 
-        x_tensor = torch.from_numpy(image).to(p.DEVICE).unsqueeze(0)
-        pr_mask = best_model.predict(x_tensor)
-        pr_mask = (pr_mask.squeeze().cpu().numpy().round())
+    for batch_idx, (X, Y) in tqdm(enumerate(test_loader)):
 
-        iou_metric = smp.utils.functional.iou(torch.from_numpy(gt_mask), torch.from_numpy(pr_mask))
-        iou_metric_list.append(iou_metric)
+        pred_Y = best_model.predict(X.to(p.DEVICE))
+        for square_idx in range(Y.shape[0]):
+            n = batch_idx * 16 + square_idx
+            sq_info = d.test_dataset.squares_info[n]
 
-        # print(iou_metric)
+            image =X[square_idx].squeeze().cpu().numpy()
+            gt_mask = Y[square_idx].squeeze().cpu().numpy().round()
+            pr_mask = pred_Y[square_idx].squeeze().cpu().numpy().round()
 
-        fig, ax = plt.subplots(1, p.channels + 2, figsize=figsize)
-        for c_idx in range(c):
-            ax[c_idx].imshow(image[c_idx], cmap='gray', vmin=0, vmax=1)
-            ax[c_idx].title.set_text(f'# {c_idx}')
-        ax[2].imshow(gt_mask[0] + gt_mask[1], cmap='gray', vmin=0, vmax=gt_mask.shape[0])
-        ax[2].title.set_text('gt_mask')
-        ax[3].imshow(pr_mask[0] + pr_mask[1], cmap='gray', vmin=0, vmax=pr_mask.shape[0])
-        ax[3].title.set_text('pr_mask')
-        # pprint(sq)
-        # plt.show()
-        sq_info = test_dataset.squares_info[n]
-        fn = f'{sq_info["fp"].split("/")[-1]}-{sq_info["w"]}_{sq_info["h"]}.png'
-        fig.savefig(osp.join(out_dir, fn))
+            iou_metric = smp.utils.functional.iou(torch.from_numpy(gt_mask), torch.from_numpy(pr_mask))
+            iou_metric_list.append(iou_metric)
+
+            fig, ax = plt.subplots(1, img_num, figsize=figsize)
+            for c_idx in range(d.test_dataset.classes):
+                ax[c_idx].imshow(image[c_idx], cmap='gray', vmin=0, vmax=1)
+                ax[c_idx].title.set_text(f'# {c_idx}')
+            ax[2].imshow(gt_mask[0] + 2 * gt_mask[1], cmap='gray', vmin=0, vmax=d.test_dataset.classes)
+            ax[2].title.set_text('gt_mask')
+            ax[3].imshow(pr_mask[0], cmap='gray', vmin=0, vmax=d.test_dataset.classes)
+            ax[3].title.set_text('pr_mask #1')
+            ax[4].imshow(2 * pr_mask[1], cmap='gray', vmin=0, vmax=d.test_dataset.classes)
+            ax[4].title.set_text('pr_mask #2')
+            # pprint(sq)
+            # plt.show()
+            fn = f'{sq_info["fp"].split("/")[-1]}-{sq_info["w"]}_{sq_info["h"]}.png'
+            fig.savefig(osp.join(out_dir, fn))
+            plt.close(fig)
+
 
     print('DONE!')
     print(f'IoU = {np.mean(iou_metric_list)}')

@@ -1,12 +1,16 @@
+import os
+import os.path as osp
+
 import time
 from datetime import datetime
 
 import nd2
 import numpy as np
 
+import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset as BaseDataset
 import albumentations as albu
-
 
 import cv2
 from tqdm import tqdm
@@ -28,9 +32,9 @@ def get_squares(orig_size, square_size, border, ):
     # square_h_with_border = square_h + 2 * border
     # square_with_border_size = (square_w_with_border, square_h_with_border)
 
-    square_w_num, square_h_num = int(np.ceil(w/square_w)), int(np.ceil(h/square_h))
-    full_size = (square_w*square_w_num, square_h*square_h_num)
-    full_size_with_borders = (full_size[0]+2*border, full_size[1]+2*border)
+    square_w_num, square_h_num = int(np.ceil(w / square_w)), int(np.ceil(h / square_h))
+    full_size = (square_w * square_w_num, square_h * square_h_num)
+    full_size_with_borders = (full_size[0] + 2 * border, full_size[1] + 2 * border)
 
     squares = []
     for start_w_idx in range(square_w_num):
@@ -47,12 +51,12 @@ def get_squares(orig_size, square_size, border, ):
                              end_h]
             square_with_borders_coords = [start_w,
                                           start_h,
-                                          end_w+2*border,
-                                          end_h+2*border]
-            square_with_borders_coords_rev = [start_w+border,
-                                              start_h+border,
-                                              end_w+border,
-                                              end_h+border]
+                                          end_w + 2 * border,
+                                          end_h + 2 * border]
+            square_with_borders_coords_rev = [start_w + border,
+                                              start_h + border,
+                                              end_w + border,
+                                              end_h + border]
 
             square_info_dict = dict(w=start_w_idx,
                                     h=start_h_idx,
@@ -79,7 +83,8 @@ def split_image(image, full_size, squares, border):
     image_with_borders = []
     for c_idx in range(c):
         image_resized_cur_c = cv2.resize(image[c_idx], full_size, interpolation=cv2.INTER_NEAREST)
-        image_with_borders_cur_c = cv2.copyMakeBorder(image_resized_cur_c, border, border, border, border, cv2.BORDER_REFLECT, None)
+        image_with_borders_cur_c = cv2.copyMakeBorder(image_resized_cur_c, border, border, border, border,
+                                                      cv2.BORDER_REFLECT, None)
         image_with_borders.append(image_with_borders_cur_c)
     image_with_borders = np.stack(image_with_borders)
 
@@ -89,12 +94,16 @@ def split_image(image, full_size, squares, border):
 
 
 def unsplit_image(img_sq_list, squares, param_name, border):
-    w_num, h_num = squares[-1]['w']+1, squares[-1]['w']+1
+    w_num, h_num = squares[-1]['w'] + 1, squares[-1]['w'] + 1
     square_size = (squares[0]['square_coords'][2], squares[0]['square_coords'][3])
-    result_size = (img_sq_list[0].shape[0], square_size[0]*w_num, square_size[1]*h_num)
+    result_size = (img_sq_list[0].shape[0], square_size[0] * w_num, square_size[1] * h_num)
     result = np.zeros(result_size)
     for sq, img_sq in zip(squares, img_sq_list):
-        result[:, sq[param_name][1]:sq[param_name][3], sq[param_name][0]:sq[param_name][2]] = img_sq[:, border:square_size[0]+border, border:square_size[1]+border]
+        result[:, sq[param_name][1]:sq[param_name][3], sq[param_name][0]:sq[param_name][2]] = img_sq[:,
+                                                                                              border:square_size[
+                                                                                                         0] + border,
+                                                                                              border:square_size[
+                                                                                                         1] + border]
     return result
 
 
@@ -208,6 +217,93 @@ class CellDataset(BaseDataset):
         return len(self.images)
 
 
+class CellDatasetMC(BaseDataset):
+    def __init__(
+            self,
+            images_fps,
+            masks_fps,
+            squares,
+            border,
+            channels,
+            classes,
+            full_size,
+            augmentation=None,
+            preprocessing=None,
+    ):
+        self.images_fps = images_fps
+        self.masks_fps = masks_fps
+        self.squares = squares
+        self.border = border
+        self.channels = channels
+        self.classes = classes
+        self.full_size = full_size
+
+        self.augmentation = augmentation
+        self.preprocessing = preprocessing
+
+        self.images, self.masks, self.squares_info = self._create_square()
+
+    def _create_square(self):
+        images = list()
+        masks = list()
+        squares_info = list()
+        for fp, mask_fp in tqdm(zip(self.images_fps, self.masks_fps)):
+            img = nd2.imread(fp)
+            img = img / 4095
+
+            assert img.shape == (2, 1024, 1024)
+
+            mask = cv2.imread(mask_fp, cv2.IMREAD_GRAYSCALE)[np.newaxis, ...]
+            mask = mask / 255
+
+            mask_contour = mask.copy()
+            mask_contour = mask_contour.transpose(1, 2, 0).astype('uint8')
+            contours, hierarchy = cv2.findContours(mask_contour,
+                                                   cv2.RETR_EXTERNAL,
+                                                   cv2.CHAIN_APPROX_SIMPLE)
+            _ = cv2.drawContours(mask_contour, contours, -1, 2, 2)
+
+            # mask = mask_contour.transpose(2, 0, 1).astype('float64')
+            # assert mask.shape == (1, 1024, 1024)
+
+            mask_contour = mask_contour.transpose(2, 0, 1).astype('float64')
+            mask = np.zeros((2, mask.shape[1], mask.shape[2]))
+            mask[0:1][mask_contour == 1] = 1
+            mask[1:2][mask_contour == 2] = 1
+            assert mask.shape == (2, 1024, 1024)
+
+            # split
+            _, img_sq_list = split_image(img, self.full_size,
+                                         self.squares, self.border)
+            _, mask_sq_list = split_image(mask, self.full_size,
+                                          self.squares, self.border)
+            for img_sq, msk_sq, sq in zip(img_sq_list,
+                                          mask_sq_list,
+                                          self.squares):
+                if self.augmentation:
+                    sample = self.augmentation(image=img_sq.astype('float32'), mask=msk_sq.astype('float32'))
+                    img_sq, msk_sq = sample['image'], sample['mask']
+
+                if self.preprocessing:
+                    sample = self.preprocessing(image=img_sq.astype('float32'), mask=msk_sq.astype('float32'))
+                    img_sq, msk_sq = sample['image'], sample['mask']
+
+                images.append(img_sq.astype(np.float32))
+                masks.append(msk_sq.astype(np.float32))
+                cur_cq = sq.copy()
+                cur_cq['fp'] = fp
+                squares_info.append(cur_cq)
+
+        return images, masks, squares_info
+
+    def __getitem__(self, i):
+
+        return self.images[i], self.masks[i]
+
+    def __len__(self):
+        return len(self.images)
+
+
 def get_training_augmentation():
     train_transform = [
 
@@ -278,3 +374,110 @@ def get_preprocessing(preprocessing_fn):
         albu.Lambda(image=to_tensor, mask=to_tensor),
     ]
     return albu.Compose(_transform, is_check_shapes=False)
+
+
+def dice_loss(pred, target, smooth=1.):
+    pred = pred.contiguous()
+    target = target.contiguous()
+
+    intersection = (pred * target).sum(dim=2).sum(dim=2)
+
+    loss = (1 - ((2. * intersection + smooth) / (
+            pred.sum(dim=2).sum(dim=2) + target.sum(dim=2).sum(dim=2) + smooth)))
+
+    return loss.mean()
+
+
+def calc_loss(pred, target, bce_weight=0.5):
+    bce = F.binary_cross_entropy_with_logits(pred, target)
+
+    pred = torch.sigmoid(pred)
+    dice = dice_loss(pred, target)
+
+    loss = bce * bce_weight + dice * (1 - bce_weight)
+
+    return loss
+
+
+class BCEDiceLoss:
+    __name__ = 'bce_dice'
+
+    def __init__(self, bce_weight=0.5):
+        self.bce_weight = bce_weight
+        self.device = 'cpu'
+
+    def __call__(self, pred, target):
+        bce = F.binary_cross_entropy_with_logits(pred, target)
+
+        pred = torch.sigmoid(pred)
+        dice = dice_loss(pred, target)
+
+        loss = bce * self.bce_weight + dice * (1 - self.bce_weight)
+
+        return loss.to(self.device)
+
+    def to(self, device):
+        self.device = device
+
+
+def prepare_data(p, images_num=None):
+    fn_list = [v for v in os.listdir(p.dataset_dir) if v.endswith('.nd2')]
+    fn_list.sort()
+
+    fp = osp.join(p.dataset_dir, fn_list[0])
+    np_data = nd2.imread(fp)
+    c, w, h = np_data.shape
+
+    print(f'total images: {len(fn_list)}')
+    print(f'image shape (c, w, h): {np_data.shape}')
+
+    orig_size = (w, h)
+    square_w, square_h = p.square_a, p.square_a
+    square_size = (square_w, square_h)
+
+    full_size, full_size_with_borders, squares = get_squares(orig_size,
+                                                             square_size,
+                                                             p.border)
+
+    # print(f'orig_size: {orig_size}')
+    # print(f'full_size: {full_size}')
+    # print(f'full_size_with_borders: {full_size_with_borders}')
+    # # pprint(core_square_sizes)
+    # print(f'squares: {len(squares)}')
+    #
+    # pprint(squares[:2])
+    # print('...')
+    # pprint(squares[-2:])
+
+    images_fps = list()
+    masks_fps = list()
+    for fn in fn_list[:images_num]:
+        images_fps.append(osp.join(p.dataset_dir, fn))
+        masks_fps.append(osp.join(p.masks_dir, f'{fn}mask.png'))
+    images_fps = np.array(images_fps)
+    masks_fps = np.array(masks_fps)
+
+    ans = my_train_test_split(images_fps, masks_fps, p.ratio_train, p.ratio_val)
+    X_train, X_val, X_test, y_train, y_val, y_test = ans
+    print(X_train.shape, X_val.shape, X_test.shape)
+
+    # preprocessing_fn = smp.encoders.get_preprocessing_fn(p.ENCODER, p.ENCODER_WEIGHTS)
+    preprocessing_fn = None
+    preprocessing = get_preprocessing(preprocessing_fn)
+
+    train_dataset = CellDatasetMC(X_train, y_train, squares,
+                                  p.border, p.channels, p.classes, full_size,
+                                  augmentation=get_training_augmentation(),
+                                  preprocessing=preprocessing)
+
+    valid_dataset = CellDatasetMC(X_val, y_val, squares,
+                                  p.border, p.channels, p.classes, full_size,
+                                  augmentation=get_validation_augmentation(),
+                                  preprocessing=preprocessing)
+
+    test_dataset = CellDatasetMC(X_test, y_test, squares,
+                                 p.border, p.channels, p.classes, full_size,
+                                 augmentation=get_validation_augmentation(),
+                                 preprocessing=preprocessing)
+
+    return train_dataset, valid_dataset, test_dataset
