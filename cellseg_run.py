@@ -8,45 +8,75 @@ from cellseg import experiment
 from cellseg_utils import prepare_data, get_str_timestamp
 
 if __name__ == '__main__':
-    run_clear_ml = True
+    draw = True
+    test = False
+    
+    if test:
+        run_clear_ml = False
+        out_dir = 'out/test'
+        shuffle = False
+        ratio_train = 0.0
+        ratio_val = 0.0
+        # ratio_train = 0.6
+        # ratio_val = 0.2
+        max_epochs = 0
+    else:
+        run_clear_ml = True
+        # out_dir = 'out/MSC'
+        out_dir = 'out/MSC_filtered'
+        shuffle = True
+        ratio_train = 0.6
+        ratio_val = 0.2
+        max_epochs = 50
+    # dataset_dir='datasets/MSC/30_04_2023-LF1-P6-P21'
+    dataset_dir='datasets/MSC/30_04_2023-LF1-P6-P21_filtered'
+    
     params = dict(
         model_name='Unet',
-        model_load_fp=None,  # 'out/MSC/Unet_20240415_154121/best_model.pth'
-        # model_load_fp='out/MSC/Unet_20240415_161246/best_model.pth',  # 'out/MSC/Unet_20240415_154121/best_model.pth'
+        # model_load_fp=None,
+        model_load_fp=os.path.join('out', 'MSC', 'Unet_timm-efficientnet-b6_20240417_144310', 'best_model.pth'),
 
-        dataset_dir='datasets/MSC/30_04_2023-LF1-P6-P21',
+        dataset_dir=dataset_dir,
         masks_dir='datasets/MSC/30_04_2023-LF1-P6-P21_masks',
-        ratio_train=0.6,
-        ratio_val=0.2,
-
+        ratio_train=ratio_train,
+        ratio_val=ratio_val,
+        
         square_a=256,
-        border=32,
+        border=64,
         classes=2,
         channels=2,
         num_workers=1,
-        batch_size=8,
+        batch_size=4,
 
-        ENCODER='efficientnet-b2',  # 'timm-efficientnet-b8',  # 'efficientnet-b0', 'se_resnext50_32x4d'
-        # ENCODER='timm-efficientnet-b8',  # 'timm-efficientnet-b8',  # 'efficientnet-b0', 'se_resnext50_32x4d'
+        ENCODER='timm-efficientnet-b6',  # 'resnet101',  # 'efficientnet-b2',  # 'timm-efficientnet-b8',  # 'efficientnet-b0'
         ENCODER_WEIGHTS='imagenet',
-        IN_CHANNELS=2,
         ACTIVATION='sigmoid',  # could be None for logits or 'softmax2d' for multiclass segmentation
         DEVICE='cuda' if torch.cuda.is_available() else 'cpu',
 
-        max_epochs=100,
+        max_epochs=max_epochs,
         lr_first=1e-3,
-        lr_last=1e-5,
+        lr_last=1e-4,
     )
-    pprint(params)
+
     params = SimpleNamespace(**params)
 
-    train_dataset, valid_dataset, test_dataset = prepare_data(params, images_num=None)
+    train_dataset, valid_dataset, test_dataset = prepare_data(params, images_num=None, shuffle=shuffle)
     datasets = SimpleNamespace(train_dataset=train_dataset,
                                valid_dataset=valid_dataset,
                                test_dataset=test_dataset)
 
-    for model_name in ['Unet', 'MAnet', 'FPN', 'DeepLabV3', 'DeepLabV3Plus']:
-        params.model_name = model_name
-        # params['DEVICE'] = 'cpu'
-        experiment(run_clear_ml=run_clear_ml, p=params, d=datasets)
-        torch.cuda.empty_cache()
+    # encoders = ['resnet34', 'resnet50', 'resnext50_32x4d', 'se_resnet50', 'resnet101', 'vgg19']
+    # models = ['Unet', 'MAnet', 'FPN', 'DeepLabV3', 'DeepLabV3Plus']
+    # models = ['DeepLabV3', 'DeepLabV3Plus']
+
+    encoders = ['timm-efficientnet-b6']
+    models = ['Unet']
+    for encoder in encoders:
+        params.ENCODER = encoder
+        for model_name in models:
+            params.model_name = model_name
+            pprint(vars(params))
+
+            log_dir = os.path.join(out_dir, f'{params.model_name}_{params.ENCODER}_{get_str_timestamp()}')
+            experiment(run_clear_ml=run_clear_ml, p=params, d=datasets, log_dir=log_dir, draw=draw)
+            torch.cuda.empty_cache()

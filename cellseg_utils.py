@@ -115,10 +115,11 @@ def draw_square(image, sq, color):
         image[c_idx][sq[3], sq[0]:sq[2]] = color[c_idx]
 
 
-def my_train_test_split(X, y, ratio_train, ratio_val, seed=42):
+def my_train_test_split(X, y, ratio_train, ratio_val, shuffle=True, seed=42):
     idx = np.arange(X.shape[0])
     np.random.seed(seed)
-    np.random.shuffle(idx)
+    if shuffle:
+        np.random.shuffle(idx)
 
     limit_train = int(ratio_train * X.shape[0])
     limit_val = int((ratio_train + ratio_val) * X.shape[0])
@@ -315,7 +316,7 @@ def get_training_augmentation():
         # albu.PadIfNeeded(min_height=320, min_width=320, always_apply=True, border_mode=0),
         # albu.RandomCrop(height=320, width=320, always_apply=True),
 
-        albu.IAAAdditiveGaussianNoise(p=0.2),
+        albu.GaussNoise(p=0.2),
         # albu.IAAPerspective(p=0.5),
 
         # albu.OneOf(
@@ -420,7 +421,7 @@ class BCEDiceLoss:
         self.device = device
 
 
-def prepare_data(p, images_num=None):
+def prepare_data(p, images_num=None, shuffle=True):
     fn_list = [v for v in os.listdir(p.dataset_dir) if v.endswith('.nd2')]
     fn_list.sort()
 
@@ -457,7 +458,7 @@ def prepare_data(p, images_num=None):
     images_fps = np.array(images_fps)
     masks_fps = np.array(masks_fps)
 
-    ans = my_train_test_split(images_fps, masks_fps, p.ratio_train, p.ratio_val)
+    ans = my_train_test_split(images_fps, masks_fps, p.ratio_train, p.ratio_val, shuffle=shuffle)
     X_train, X_val, X_test, y_train, y_val, y_test = ans
     print(X_train.shape, X_val.shape, X_test.shape)
 

@@ -20,12 +20,12 @@ import matplotlib
 
 from clearml import Task
 
-from cellseg_utils import get_str_timestamp, BCEDiceLoss
+from cellseg_utils import BCEDiceLoss, unsplit_image
 
 matplotlib.use('TkAgg')
 
 
-def experiment(run_clear_ml=False, p=None, d=None):
+def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
     if p.max_epochs != 0:
         train_loader = DataLoader(d.train_dataset, batch_size=p.batch_size,
                                   shuffle=True, num_workers=p.num_workers)
@@ -34,8 +34,8 @@ def experiment(run_clear_ml=False, p=None, d=None):
     test_loader = DataLoader(d.test_dataset, batch_size=16,
                              shuffle=False)
 
-    timestamp = get_str_timestamp()
-    log_dir = f'out/MSC/{p.model_name}_{p.ENCODER}_{timestamp}'
+    if log_dir is None:
+        log_dir = 'Run'
     os.makedirs(log_dir)
 
     # create segmentation model with pretrained encoder
@@ -45,7 +45,7 @@ def experiment(run_clear_ml=False, p=None, d=None):
         model = model_func(
             encoder_name=p.ENCODER,
             encoder_weights=p.ENCODER_WEIGHTS,
-            in_channels=p.IN_CHANNELS,
+            in_channels=p.channels,
             classes=p.classes,
             activation=p.ACTIVATION,
         )
@@ -144,54 +144,131 @@ def experiment(run_clear_ml=False, p=None, d=None):
 
     test_logs = test_epoch.run(test_loader)
     for k, v in test_logs.items():
+        writer.add_scalar(f'{k}/test', v, 0)
         print(f"{' '.join(k.split('_')).title()}: {v:.2f}")
 
     writer.close()
     if run_clear_ml:
         task.close()
 
-    # visualize results of best saved model
-    iou_metric_list = list()
+    if draw:
+        # visualize results of best saved model
+        iou_metric_list = list()
 
-    out_dir = os.path.join(log_dir, 'results')
-    os.makedirs(out_dir, exist_ok=True)
-    # for directory in ['image', 'gt', 'pr', 'compare']:
-    #     os.makedirs(os.path.join(out_dir, directory), exist_ok=True)
+        out_dir = os.path.join(log_dir, 'results')
+        os.makedirs(out_dir, exist_ok=True)
+        os.makedirs(osp.join(out_dir, 'full'), exist_ok=True)
+        os.makedirs(osp.join(out_dir, 'compare'), exist_ok=True)
 
-    W = H = 5
-    img_num = p.channels + 1 + d.test_dataset.classes
-    figsize = (W * img_num, H)
+        # for directory in ['image', 'gt', 'pr', 'compare']:
+        #     os.makedirs(os.path.join(out_dir, directory), exist_ok=True)
 
-    for batch_idx, (X, Y) in tqdm(enumerate(test_loader)):
+        W = H = 20
+        img_num = p.channels + 2
+        figsize = (W * img_num, H)
 
-        pred_Y = best_model.predict(X.to(p.DEVICE))
-        for square_idx in range(Y.shape[0]):
-            n = batch_idx * 16 + square_idx
-            sq_info = d.test_dataset.squares_info[n]
+        for batch_idx, (X, Y) in tqdm(enumerate(test_loader)):
 
-            image =X[square_idx].squeeze().cpu().numpy()
-            gt_mask = Y[square_idx].squeeze().cpu().numpy().round()
-            pr_mask = pred_Y[square_idx].squeeze().cpu().numpy().round()
+            pred_Y = best_model.predict(X.to(p.DEVICE))
+            img_sq_list = list()
+            gt_sq_list = list()
+            pr_sq_list = list()
 
-            iou_metric = smp.utils.functional.iou(torch.from_numpy(gt_mask), torch.from_numpy(pr_mask))
-            iou_metric_list.append(iou_metric)
+            sq_info = None
+            for square_idx in range(Y.shape[0]):
+                n = batch_idx * 16 + square_idx
+                sq_info = d.test_dataset.squares_info[n]
 
+                image = X[square_idx].squeeze().cpu().numpy()
+                gt_mask = Y[square_idx].squeeze().cpu().numpy().round()
+                pr_mask = pred_Y[square_idx].squeeze().cpu().numpy().round()
+                img_sq_list.append(image)
+                gt_sq_list.append(gt_mask)
+                pr_sq_list.append(pr_mask)
+
+                iou_metric = smp.utils.functional.iou(torch.from_numpy(gt_mask), torch.from_numpy(pr_mask))
+                iou_metric_list.append(iou_metric)
+
+                # fig, ax = plt.subplots(1, img_num, figsize=figsize)
+                # for c_idx in range(d.test_dataset.classes):
+                #     ax[c_idx].imshow(image[c_idx], cmap='gray', vmin=0, vmax=1)
+                #     ax[c_idx].title.set_text(f'# {c_idx}')
+
+                # gt_full = gt_mask[0]
+                # gt_full[gt_mask[1] == 1] = 2
+                # pr_full = pr_mask[0]
+                # pr_full[pr_mask[1] == 1] = 2
+            
+                # ax[p.channels + 0].imshow(gt_full, cmap='gray', vmin=0, vmax=d.test_dataset.classes)
+                # ax[p.channels + 0].title.set_text('gt_mask')
+                # ax[p.channels + 1].imshow(pr_full, cmap='gray', vmin=0, vmax=d.test_dataset.classes)
+                # ax[p.channels + 1].title.set_text('pr_mask')
+                # # pprint(sq)
+                # # plt.show()
+                # fn = f'{sq_info["fp"].split("/")[-1]}-{sq_info["w"]}_{sq_info["h"]}.png'
+                # fig.savefig(osp.join(out_dir, fn))
+                # plt.close(fig)
+
+            restored_img = unsplit_image(img_sq_list, test_loader.dataset.squares, 'square_coords', test_loader.dataset.border)
+            restored_gt = unsplit_image(gt_sq_list, test_loader.dataset.squares, 'square_coords', test_loader.dataset.border)
+            restored_pr = unsplit_image(pr_sq_list, test_loader.dataset.squares, 'square_coords', test_loader.dataset.border)
+            restored_gt_full = restored_gt[0]
+            restored_gt_full[restored_gt[1] == 1] = 2
+            restored_pr_full = restored_pr[0]
+            restored_pr_full[restored_pr[1] == 1] = 2
+            
             fig, ax = plt.subplots(1, img_num, figsize=figsize)
             for c_idx in range(d.test_dataset.classes):
-                ax[c_idx].imshow(image[c_idx], cmap='gray', vmin=0, vmax=1)
+                ax[c_idx].imshow(restored_img[c_idx], cmap='gray', vmin=0, vmax=1)
                 ax[c_idx].title.set_text(f'# {c_idx}')
-            ax[2].imshow(gt_mask[0] + 2 * gt_mask[1], cmap='gray', vmin=0, vmax=d.test_dataset.classes)
-            ax[2].title.set_text('gt_mask')
-            ax[3].imshow(pr_mask[0], cmap='gray', vmin=0, vmax=d.test_dataset.classes)
-            ax[3].title.set_text('pr_mask #1')
-            ax[4].imshow(2 * pr_mask[1], cmap='gray', vmin=0, vmax=d.test_dataset.classes)
-            ax[4].title.set_text('pr_mask #2')
+            ax[p.channels + 0].imshow(restored_gt_full, cmap='gray', vmin=0, vmax=d.test_dataset.classes)
+            ax[p.channels + 0].title.set_text('gt_mask')
+            ax[p.channels + 1].imshow(restored_pr_full, cmap='gray', vmin=0, vmax=d.test_dataset.classes)
+            ax[p.channels + 1].title.set_text('pr_mask')
             # pprint(sq)
             # plt.show()
-            fn = f'{sq_info["fp"].split("/")[-1]}-{sq_info["w"]}_{sq_info["h"]}.png'
-            fig.savefig(osp.join(out_dir, fn))
+            fn = f'{sq_info["fp"].split("/")[-1]}.png'
+            fig.savefig(osp.join(out_dir, 'full', fn))
             plt.close(fig)
 
+            fig, ax = plt.subplots(1, 2, figsize=(W * 2, H))
+            color_k = 100
+
+            img_gt = restored_img[0].copy()
+            img_gt3 = np.stack([img_gt, img_gt, img_gt], axis=2) * 255
+            green_idx = restored_gt[0] == 1
+            img_gt3[..., 0][green_idx] -= color_k
+            img_gt3[..., 1][green_idx] += color_k
+            img_gt3[..., 2][green_idx] -= color_k
+            red_idx = restored_gt[1] == 1
+            img_gt3[..., 0][red_idx] += color_k
+            img_gt3[..., 1][red_idx] -= color_k
+            img_gt3[..., 2][red_idx] -= color_k
+            np.clip(img_gt3, 0, 255, out=img_gt3)
+            img_gt3 = img_gt3.astype(np.uint8)
+            ax[0].imshow(img_gt3)
+            ax[0].title.set_text('img_gt')
+            
+            img_pr = restored_img[0].copy()
+            img_pr3 = np.stack([img_pr, img_pr, img_pr], axis=2) * 255
+            green_idx = restored_pr[0] == 1
+            img_pr3[..., 0][green_idx] -= color_k
+            img_pr3[..., 1][green_idx] += color_k
+            img_pr3[..., 2][green_idx] -= color_k
+            red_idx = restored_pr[1] == 1
+            img_pr3[..., 0][red_idx] += color_k
+            img_pr3[..., 1][red_idx] -= color_k
+            img_pr3[..., 2][red_idx] -= color_k
+            np.clip(img_pr3, 0, 255, out=img_pr3)
+            img_pr3 = img_pr3.astype(np.uint8)
+            ax[1].imshow(img_pr3)
+            ax[1].title.set_text('img_pr')
+            
+            fn = f'{sq_info["fp"].split("/")[-1]}.png'
+            fig.savefig(osp.join(out_dir, 'compare', fn))
+            plt.close(fig)
+            
+        print(f'IoU = {np.mean(iou_metric_list)}')
 
     print('DONE!')
-    print(f'IoU = {np.mean(iou_metric_list)}')
+
