@@ -1,7 +1,7 @@
 # import os
 # import os.path as osp
 import random
-# import re
+import re
 import time
 from datetime import datetime
 
@@ -11,6 +11,9 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset as BaseDataset
 import segmentation_models_pytorch as smp
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import albumentations as A
 
 from PIL import Image
@@ -73,22 +76,22 @@ def get_squares(orig_size, square_size, border):
 def split_on_squares(image, squares, param_name):
     img_sq_list = []
     for sq in squares:
-        img_sq = image[:, sq[param_name][1]:sq[param_name][3], sq[param_name][0]:sq[param_name][2]].copy()
+        img_sq = image[sq[param_name][1]:sq[param_name][3], sq[param_name][0]:sq[param_name][2], :].copy()
         img_sq_list.append(img_sq)
 
     return img_sq_list
 
 
 def split_image(image, full_size, squares, border):
-    c = image.shape[0]
+    c = image.shape[-1]
 
     image_with_borders = []
     for c_idx in range(c):
-        image_resized_cur_c = cv2.resize(image[c_idx], full_size, interpolation=cv2.INTER_NEAREST)
+        image_resized_cur_c = cv2.resize(image[..., c_idx], full_size, interpolation=cv2.INTER_NEAREST)
         image_with_borders_cur_c = cv2.copyMakeBorder(image_resized_cur_c, border, border, border, border,
                                                       cv2.BORDER_REFLECT, None)
         image_with_borders.append(image_with_borders_cur_c)
-    image_with_borders = np.stack(image_with_borders)
+    image_with_borders = np.stack(image_with_borders, axis=-1)
 
     img_sq_list = split_on_squares(image_with_borders, squares, 'square_with_borders_coords')
 
@@ -99,13 +102,13 @@ def unsplit_image(img_sq_list, squares, param_name, border):
     w_num, h_num = squares[-1]['w'] + 1, squares[-1]['h'] + 1
     square_size = (squares[0]['square_coords'][2], squares[0]['square_coords'][3])
     result_size = (img_sq_list[0].shape[0], square_size[0] * h_num, square_size[1] * w_num)
+    src_w0, src_w1 = border, square_size[0] + border
+    src_h0, src_h1 = border, square_size[1] + border
     result = np.zeros(result_size)
     for sq, img_sq in zip(squares, img_sq_list):
-        result[:, sq[param_name][1]:sq[param_name][3], sq[param_name][0]:sq[param_name][2]] = img_sq[:,
-                                                                                              border:square_size[
-                                                                                                         0] + border,
-                                                                                              border:square_size[
-                                                                                                         1] + border]
+        dst_w0, dst_w1 = sq[param_name][1], sq[param_name][3]
+        dst_h0, dst_h1 = sq[param_name][0], sq[param_name][2]
+        result[:, dst_w0:dst_w1, dst_h0:dst_h1] = img_sq[:, src_w0:src_w1, src_h0:src_h1]
     return result
 
 
@@ -160,6 +163,7 @@ def get_all_fp_data(exps_dir, exp_class_dict):
             p_fp = cur_exp_dir / p_fn
 
             sample_data = dict(cls=exp_class_dict[cur_exp],
+                               idx=idx,
                                mask_fp=mask_fp,
                                r_fp=r_fp,
                                g_fp=g_fp,
@@ -179,37 +183,35 @@ class CellDataset4(BaseDataset):
     def __init__(
             self,
             all_fp_data,
-            exp_class_dict,
-            full_size,
+            full_size=None,
             add_shadow_to_img=False,
             squares=None,
             border=None,
-            channels=3,
-            classes_num=2,
             classes=None,
             augmentation=None,
             preprocessing=None,
-            target_size=None
+            target_size=None,
+            contour_thickness=2,
+            max_workers=8
     ):
         self.all_fp_data = all_fp_data
-        self.exp_class_dict = exp_class_dict
         self.full_size = full_size
 
         self.add_shadow_to_img = add_shadow_to_img
 
         self.squares = squares
         self.border = border
-        self.channels = channels
+        self.channels = None
 
-        self.classes_num = classes_num
         self.classes = classes
 
         self.augmentation = augmentation
         self.preprocessing = preprocessing
+        self.max_workers = max_workers
 
         self.target_size = target_size
 
-        self.contour_thickness = 2
+        self.contour_thickness = contour_thickness
 
         if self.border is None:
             self.border = 0
@@ -217,21 +219,81 @@ class CellDataset4(BaseDataset):
         self.images = list()
         self.masks = list()
         self.shadows = list()
-        self.squares_info = list()
+        self.info = list()
+
+        # self.default_processing()
+        self.parallel_processing(max_workers=self.max_workers)  # запуск параллельной обработки
+
+        if len(self.images) != 0:
+            self.channels = self.images[0].shape[-1]
+            if self.add_shadow_to_img:
+                self.channels += 1
+
+    def process_fp_data(self, fp_data):
+        """Метод для обработки одного объекта данных."""
+        img = self.read_image(fp_data)
+        mask = self.read_mask(fp_data) // 255
+        assert img.shape[:-1] == mask.shape[:-1]
+
+        if self.classes is not None:
+            mask = self._prepare_mask(mask, cls_num=len(self.classes), cls=fp_data['cls'],
+                                      contour_thickness=self.contour_thickness)
+        else:
+            mask = self._prepare_mask(mask, cls_num=1, cls=0, contour_thickness=self.contour_thickness)
+        shadow = self.read_shadow(fp_data)[..., 0:1] if self.add_shadow_to_img else None
+
+        result_images, result_masks, result_shadows, result_info = [], [], [], []
+
+        if all(v is not None for v in [self.full_size, self.squares, self.border]):
+            # Разбиение на части
+            _, img_sq_list = split_image(img, self.full_size, self.squares, self.border)
+            _, mask_sq_list = split_image(mask, self.full_size, self.squares, self.border)
+
+            if self.add_shadow_to_img:
+                _, shadow_sq_list = split_image(shadow, self.full_size, self.squares, self.border)
+            else:
+                shadow_sq_list = [None] * len(img_sq_list)
+
+            for img_sq, msk_sq, shd_sq, sq in zip(img_sq_list, mask_sq_list, shadow_sq_list, self.squares):
+                result_images.append(img_sq)
+                result_masks.append(msk_sq.astype(np.bool_))
+                result_shadows.append(shd_sq)
+
+                squares_info = dict(sq=sq)
+                squares_info.update(fp_data)
+                result_info.append(squares_info)
+        else:
+            result_images.append(img)
+            result_masks.append(mask.astype(np.bool_))
+            result_shadows.append(shadow)
+            result_info.append(fp_data)
+
+        return result_images, result_masks, result_shadows, result_info
+
+    def default_processing(self):
         for fp_data in tqdm(self.all_fp_data):
-            img = self.read_image(fp_data).astype(np.uint8)
-            mask = self.read_mask(fp_data) / 255
-            assert img.shape[:-1] == mask.shape[:-1]
+            images, masks, shadows, info = self.process_fp_data(fp_data)
+            self.images.extend(images)
+            self.masks.extend(masks)
+            self.shadows.extend(shadows)
+            self.info.extend(info)
 
-            mask = self._prepare_mask(mask).astype(np.uint8)
-            shadow = self.read_shadow(fp_data).astype(np.uint8) if self.add_shadow_to_img else None
+    def parallel_processing(self, max_workers=4):
+        """Параллельная обработка данных."""
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(self.process_fp_data, fp_data): fp_data for fp_data in self.all_fp_data}
+            for future in tqdm(as_completed(futures), total=len(futures)):
+                try:
+                    images, masks, shadows, info = future.result()
+                    self.images.extend(images)
+                    self.masks.extend(masks)
+                    self.shadows.extend(shadows)
+                    self.info.extend(info)
+                except Exception as e:
+                    print(f"Ошибка при обработке данных: {e}")
 
-            self.images.append(img)
-            self.masks.append(mask)
-            self.shadows.append(shadow)
-            self.squares_info.append(None)
-
-    def read_image(self, fp_data, channels=None, convert=None):
+    @staticmethod
+    def read_image(fp_data, channels=None, convert=None):
         if channels is None:
             channels = ['r', 'g', 'b']
 
@@ -239,12 +301,14 @@ class CellDataset4(BaseDataset):
         for c_idx, c in enumerate(channels):
             c_img = Image.open(fp_data[f'{c}_fp'])
 
-            new_width = c_img.size[0] // 32 * 32
-            new_height = c_img.size[0] // 32 * 32
-            c_img = c_img.resize((new_width, new_height))
-
-            if self.target_size:
-                c_img = c_img.resize(self.target_size)
+            # if self.target_size:
+            #     if self.target_size[0] != c_img.size[0] or self.target_size[1] != c_img.size[1]:
+            #         c_img = c_img.resize(self.target_size)
+            # else:
+            #     new_width = c_img.size[0] // 32 * 32
+            #     new_height = c_img.size[1] // 32 * 32
+            #     if new_width != c_img.size[0] or new_height != c_img.size[1]:
+            #         c_img = c_img.resize((new_width, new_height))
 
             if convert:
                 c_img = np.asarray(c_img.convert(convert))
@@ -256,103 +320,67 @@ class CellDataset4(BaseDataset):
 
         return img_np
 
-    def read_mask(self, fp_data):
-        return self.read_image(fp_data, channels=['mask'])
+    @staticmethod
+    def read_mask(fp_data):
+        return CellDataset4.read_image(fp_data, channels=['mask'])
 
-    def read_shadow(self, fp_data):
-        return self.read_image(fp_data, channels=['p'], convert='L')
+    @staticmethod
+    def read_shadow(fp_data):
+        return CellDataset4.read_image(fp_data, channels=['p'], convert='L')
 
-    def _prepare_mask(self, mask):
+    @staticmethod
+    def _prepare_mask(mask, cls_num=1, cls=0, contour_thickness=2):
         mask_contour = mask.copy()
-        mask_contour = mask_contour.astype('uint8')
         contours, hierarchy = cv2.findContours(mask_contour,
                                                cv2.RETR_EXTERNAL,
                                                cv2.CHAIN_APPROX_SIMPLE)
-        _ = cv2.drawContours(mask_contour, contours, -1, 2, self.contour_thickness)
+        _ = cv2.drawContours(mask_contour, contours, -1, 2, contour_thickness)
         # mask_contour = mask_contour.transpose(2, 0, 1)
         # mask_contour = mask_contour
-        mask = np.zeros((mask.shape[0], mask.shape[1], 2), dtype=mask.dtype)
-        mask[..., 0:1][mask_contour == 1] = 1
-        mask[..., 1:2][mask_contour == 2] = 1
+        mask = np.zeros((mask.shape[0], mask.shape[1], cls_num + 1), dtype=mask.dtype)
+        mask[..., cls:cls + 1][mask_contour == 1] = 1
+        mask[..., cls_num:cls_num + 1][mask_contour == 2] = 1
+        # mask = np.zeros((mask.shape[0], mask.shape[1], 2), dtype=mask.dtype)
+        # mask[..., 0:1][mask_contour == 1] = 1
+        # mask[..., 1:2][mask_contour == 2] = 1
 
         return mask
 
     def aug(self, img, mask, shadow=False):
         if self.augmentation or self.preprocessing:
-            img_orig_dtype = img.dtype
-            mask_orig_dtype = mask.dtype
+            # img_orig_dtype = img.dtype
+            # mask_orig_dtype = mask.dtype
+
+            mask = mask.astype(np.uint8)
 
             if shadow is None:
                 if self.augmentation:
-                    sample = self.augmentation(image=img.astype(np.uint8), mask=mask.astype(np.uint8))
+                    sample = self.augmentation(image=img, mask=mask)
                     img, mask = sample['image'], sample['mask']
 
                 if self.preprocessing:
-                    sample = self.preprocessing(image=img.astype(np.uint8), mask=mask.astype(np.uint8))
+                    sample = self.preprocessing(image=img, mask=mask)
                     img, mask = sample['image'], sample['mask']
 
-                img = img.astype(img_orig_dtype)
-                mask = mask.astype(mask_orig_dtype)
+                # img = img.astype(img_orig_dtype)
+                # mask = mask.astype(mask_orig_dtype)
 
             else:
                 if self.augmentation:
-                    sample = self.augmentation(image=img.astype(np.uint8), mask=mask.astype(np.uint8),
-                                               shadow=shadow.astype(np.uint8))
+                    sample = self.augmentation(image=img, mask=mask, shadow=shadow)
                     img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
 
                 if self.preprocessing:
-                    sample = self.preprocessing(image=img.astype(np.uint8), mask=mask.astype(np.uint8),
-                                                shadow=shadow.astype(np.uint8))
+                    sample = self.preprocessing(image=img, mask=mask, shadow=shadow)
                     img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
 
                 # shadow = np.asarray(Image.fromarray(np.dstack[np.uint8(shadow)]*3)).convert('L'))
-                shadow = shadow[..., 0].astype(img_orig_dtype)
-                img = img.astype(img_orig_dtype)
-                img = np.dstack([img, shadow])
-                mask = mask.astype(mask_orig_dtype)
+                # shadow = shadow[..., 0].astype(img_orig_dtype)
+                # img = (img * 255).astype(img_orig_dtype)
+                img = np.dstack([img, shadow[..., 0]])
+                # mask = mask.astype(mask_orig_dtype)
 
-        return img, mask
-
-    # def _create_squares(self):
-    #     images = list()
-    #     masks = list()
-    #     squares_info = list()
-    #     for fp_data in tqdm(self.all_fp_data):
-    #         img = self.read_image(fp_data)
-    #         mask = self.read_mask(fp_data)
-    #         assert img.shape[:-1] == mask.shape[:-1]
-
-    #         mask = self._prepare_mask(mask / 255)
-
-    #         # split
-    #         _, img_sq_list = split_image(img, self.full_size,
-    #                                      self.squares, self.border)
-    #         _, mask_sq_list = split_image(mask, self.full_size,
-    #                                       self.squares, self.border)
-    #         if self.add_shadow_to_img:
-    #             shadow = self.read_shadow(fp_data)
-    #             _, shadow_sq_list = split_image(shadow, self.full_size,
-    #                           self.squares, self.border)
-    #         else:
-    #             shadow_sq_list = [None] * len(img_sq_list)
-
-    #         for img_sq, msk_sq, shd_sq, sq in zip(img_sq_list,
-    #                                       mask_sq_list, shadow_sq_list,
-    #                                       self.squares):
-
-    #             img_sq, msk_sq = self.aug(img, mask, shadow=shd_sq)
-    #             img_sq = img_sq.transpose(2, 0, 1)
-    #             msk_sq = msk_sq.transpose(2, 0, 1)
-
-    #             images.append(img_sq.astype(np.uint8))
-    #             masks.append(msk_sq.astype(np.uint8))
-    #             # cur_cq = sq.copy()
-    #             # cur_cq['fp'] = fp
-    #             squares_info.append(sq)
-
-    #     # images = np.stack(images, axis=0)
-    #     # masks = np.stack(masks, axis=0)
-    #     return images, masks, squares_info
+        return img / 255, mask
 
     def __getitem__(self, i):
         img, mask = self.aug(self.images[i], self.masks[i], shadow=self.shadows[i])
@@ -363,6 +391,18 @@ class CellDataset4(BaseDataset):
         return len(self.images)
 
 
+class ApplyToImageOnly(A.ImageOnlyTransform):
+    def __init__(self, transform, always_apply=False, p=1.0):
+        super(ApplyToImageOnly, self).__init__(always_apply, p)
+        self.transform = transform
+
+    def apply(self, img, **params):
+        # Проверяем, что это основное изображение, а не shadow
+        if img.shape[2] == 3:  # Только для трехканальных изображений
+            return self.transform(image=img)["image"]
+        return img
+
+
 def get_training_augmentation(target_size=None):
     train_transform = [
 
@@ -371,11 +411,9 @@ def get_training_augmentation(target_size=None):
 
         A.ShiftScaleRotate(shift_limit=0, scale_limit=0.25, rotate_limit=0, p=1, border_mode=0),
 
-        # A.PadIfNeeded(min_height=320, min_width=320, always_apply=True, border_mode=0),
-        A.RandomResizedCrop(*target_size, scale=(0.6, 1.0), p=0.5),
+        A.RandomResizedCrop(height=target_size[1], width=target_size[0], scale=(0.75, 1.0), p=0.5),
 
         A.GaussNoise(p=0.2),
-        # A.IAAPerspective(p=0.5),
 
         A.OneOf(
             [
@@ -393,11 +431,12 @@ def get_training_augmentation(target_size=None):
             ],
             p=0.9,
         ),
-        A.HueSaturationValue(p=0.9),
+        ApplyToImageOnly(A.HueSaturationValue(p=0.9)),  # Применяем только к основному изображению
     ]
     if target_size is not None:
-        train_transform.append(A.Resize(*target_size, always_apply=True))
-    return A.Compose(train_transform, is_check_shapes=False, additional_targets={'shadow': 'image'})
+        train_transform.append(A.Resize(height=target_size[1], width=target_size[0], always_apply=True))
+
+    return A.Compose(train_transform, additional_targets={'shadow': 'image'})
 
 
 def get_validation_augmentation(target_size=None):
@@ -407,7 +446,7 @@ def get_validation_augmentation(target_size=None):
         # A.Resize(384, 480)
     ]
     if target_size is not None:
-        test_transform.append(A.Resize(*target_size, always_apply=True))
+        test_transform.append(A.Resize(height=target_size[1], width=target_size[0], always_apply=True))
     return A.Compose(test_transform, is_check_shapes=False, additional_targets={'shadow': 'image'})
 
 
@@ -419,10 +458,10 @@ def get_preprocessing(preprocessing_fn):
     """Construct preprocessing transform
 
     Args:
-        preprocessing_fn (callbale): data normalization function 
+        preprocessing_fn (callable): data normalization function
             (can be specific for each pretrained neural network)
     Return:
-        transform: Amentations.Compose
+        transform: Augmentations.Compose
 
     """
 
@@ -451,45 +490,49 @@ class BCEDiceLoss:
     def __init__(self, bce_weight=0.5):
         self.bce_weight = bce_weight
         self.device = 'cpu'
+        if self.bce_weight == 0:
+            self.__call__ = self.dice_loss_calc
+        elif self.bce_weight == 1:
+            self.__call__ = self.bce_loss_calc
 
     def __call__(self, pred, target):
-        bce = F.binary_cross_entropy_with_logits(pred, target, reduction='mean')
+        return (self.bce_loss_calc(pred, target) * self.bce_weight +
+                self.dice_loss_calc(pred, target) * (1 - self.bce_weight))
 
-        pred = torch.sigmoid(pred)
-        dice = dice_loss(pred, target)
+    def dice_loss_calc(self, pred, target):
+        return dice_loss(torch.sigmoid(pred), target).to(self.device)
 
-        loss = bce * self.bce_weight + dice * (1 - self.bce_weight)
-
-        return loss.to(self.device)
+    def bce_loss_calc(self, pred, target):
+        return F.binary_cross_entropy_with_logits(pred, target, reduction='mean').to(self.device)
 
     def to(self, device):
         self.device = device
 
 
-# def parse_filename(filename):
-#     # Определяем шаблон для поиска
-#     pattern = r'^(.*?)_LF(\d+)-P(\d+)_(.*?)_(\d+)\.nd2$'
+def parse_filename_nd2(filename):
+    # Определяем шаблон для поиска
+    pattern = r'^(.*?)_LF(\d+)-P(\d+)_(.*?)_(\d+)\.nd2$'
 
-#     # Применяем регулярное выражение к имени файла
-#     match = re.match(pattern, filename)
+    # Применяем регулярное выражение к имени файла
+    match = re.match(pattern, filename)
 
-#     if match:
-#         # Получаем группы из регулярного выражения
-#         group1 = match.group(1)
-#         group2 = int(match.group(3))
-#         group3 = match.group(4)
-#         group4 = int(match.group(5))
+    if match:
+        # Получаем группы из регулярного выражения
+        group1 = match.group(1)
+        group2 = int(match.group(3))
+        group3 = match.group(4)
+        group4 = int(match.group(5))
 
-#         return group1, group2, group3, group4
-#     else:
-#         return None
+        return group1, group2, group3, group4
+    else:
+        return None
 
 
 def get_classes_from_fps(fps, classes_groups=None):
     classes = list()
     for fp in fps:
         fn = fp.split('/')[-1]
-        exp, p, marker, n = parse_filename(fn)
+        exp, p, marker, n = parse_filename_nd2(fn)
         classes.append(p)
 
     if classes_groups is None:
@@ -506,82 +549,111 @@ def get_classes_from_fps(fps, classes_groups=None):
     return classes
 
 
-def prepare_data(p, images_num=None, shuffle=True):
-    all_fp_data = get_all_fp_data(p.dataset_dir, p.exp_class_dict)
+def prepare_data_from_params(params, shuffle=True, max_workers=8):
+    return prepare_data(dataset_dir=params.dataset_dir,
+                        exp_class_dict=params.exp_class_dict,
+                        square_a=params.square_a,
+                        border=params.border,
+                        ratio_train=params.ratio_train,
+                        ratio_val=params.ratio_val,
+                        images_num=params.images_num,
+                        multiclass=params.multiclass,
+                        add_shadow_to_img=params.add_shadow_to_img,
+                        contour_thickness=params.contour_thickness,
+                        shuffle=shuffle,
+                        max_workers=max_workers)
+
+
+def prepare_data(dataset_dir,
+                 exp_class_dict,
+                 square_a=236,
+                 border=10,
+                 ratio_train=0.6,
+                 ratio_val=0.2,
+                 images_num=None,
+                 shuffle=True,
+                 resize_coef=1,
+                 multiclass=False,
+                 add_shadow_to_img=True,
+                 contour_thickness=2,
+                 max_workers=8):
+    all_fp_data = get_all_fp_data(dataset_dir, exp_class_dict)
     all_fp_data = all_fp_data[:images_num]
     if shuffle:
         random.shuffle(all_fp_data)
 
     total_len = len(all_fp_data)
-    train_num = int(total_len * p.ratio_train)
-    val_num = int(total_len * p.ratio_val)
+    train_num = int(total_len * ratio_train)
+    val_num = int(total_len * ratio_val)
     test_num = total_len - val_num
 
     train_fp_data = all_fp_data[:train_num]
     val_fp_data = all_fp_data[train_num:train_num + val_num]
     test_fp_data = all_fp_data[train_num + val_num:]
 
-    mask_img = Image.open(all_fp_data[0]['mask_fp'])
-    w, h = mask_img.size[0], mask_img.size[1]
+    img_path = all_fp_data[0]['mask_fp']
+    with Image.open(img_path) as img:
+        new_width = int(img.size[0] / resize_coef) // 32 * 32
+        new_height = int(img.size[1] / resize_coef) // 32 * 32
+        target_size = (new_width, new_height)
 
-    k = 8
-
-    w, h = int(w / k // 32 * 32), int(h / k // 32 * 32)
-    target_size = (w, h)
-
-    if p.square_a is None:
+    if square_a is None:
         full_size, squares = None, None
     else:
-        square_w, square_h = p.square_a, p.square_a
+        square_w, square_h = square_a, square_a
         square_size = (square_w, square_h)
-        full_size, full_size_with_borders, squares = get_squares(target_size, square_size, p.border)
+        full_size, full_size_with_borders, squares = get_squares(target_size, square_size, border)
 
-    add_shadow_to_img = True
-
-    preprocessing_fn = smp.encoders.get_preprocessing_fn(p.ENCODER, p.ENCODER_WEIGHTS)
-    # preprocessing_fn = None
+    # preprocessing_fn = smp.encoders.get_preprocessing_fn(p.ENCODER, p.ENCODER_WEIGHTS)
+    preprocessing_fn = None
     preprocessing = get_preprocessing(preprocessing_fn)
 
+    transform_size = squares[0]['square_with_borders_coords'][2:]
+
+    if multiclass:
+        classes = [v for v in exp_class_dict.values()]
+        classes.sort()
+
+    else:
+        classes = None
+
     train_dataset = CellDataset4(train_fp_data,
-                                 p.exp_class_dict,
                                  full_size=full_size,
                                  add_shadow_to_img=add_shadow_to_img,
                                  squares=squares,
-                                 border=p.border,
-                                 channels=None,
-                                 classes_num=2,
-                                 augmentation=get_training_augmentation(target_size=target_size),
+                                 border=border,
+                                 augmentation=get_training_augmentation(target_size=transform_size),
                                  preprocessing=preprocessing,
-                                 classes=None,
-                                 target_size=target_size
+                                 classes=classes,
+                                 target_size=target_size,
+                                 contour_thickness=contour_thickness,
+                                 max_workers=max_workers
                                  )
 
     valid_dataset = CellDataset4(val_fp_data,
-                                 p.exp_class_dict,
                                  full_size=full_size,
                                  add_shadow_to_img=add_shadow_to_img,
                                  squares=squares,
-                                 border=p.border,
-                                 channels=None,
-                                 classes_num=2,
-                                 augmentation=get_validation_augmentation(target_size=target_size),
+                                 border=border,
+                                 augmentation=get_validation_augmentation(target_size=transform_size),
                                  preprocessing=preprocessing,
-                                 classes=None,
-                                 target_size=target_size
+                                 classes=classes,
+                                 target_size=target_size,
+                                 contour_thickness=contour_thickness,
+                                 max_workers=max_workers
                                  )
 
     test_dataset = CellDataset4(test_fp_data,
-                                p.exp_class_dict,
                                 full_size=full_size,
                                 add_shadow_to_img=add_shadow_to_img,
                                 squares=squares,
-                                border=p.border,
-                                channels=None,
-                                classes_num=2,
-                                augmentation=get_validation_augmentation(target_size=target_size),
+                                border=border,
+                                augmentation=get_validation_augmentation(target_size=transform_size),
                                 preprocessing=preprocessing,
-                                classes=None,
-                                target_size=target_size
+                                classes=classes,
+                                target_size=target_size,
+                                contour_thickness=contour_thickness,
+                                max_workers=max_workers
                                 )
 
     return train_dataset, valid_dataset, test_dataset

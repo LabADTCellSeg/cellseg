@@ -1,9 +1,9 @@
 import os
-# import os.path as osp
+from pathlib import Path
 import importlib
 
 # import nd2
-# import numpy as np
+import numpy as np
 
 import torch
 from torch.utils.data import DataLoader
@@ -14,29 +14,38 @@ import segmentation_models_pytorch.utils
 from torchinfo import summary
 
 from pprint import pprint
-import matplotlib.pyplot as plt
 from tqdm import tqdm
-import matplotlib
 
 from clearml import Task
 
 from cellseg_utils import BCEDiceLoss, unsplit_image
 
-matplotlib.use('TkAgg')
+import matplotlib
+
+if os.environ.get('DISPLAY', '') == '':
+    print("No display found. Using non-interactive Agg backend.")
+    matplotlib.use('Agg')  # Используем Agg для headless режима
+else:
+    matplotlib.use('TkAgg')  # Используем TkAgg для обычного режима
+
+import matplotlib.pyplot as plt
 
 
 def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
     if p.max_epochs != 0:
         train_loader = DataLoader(d.train_dataset, batch_size=p.batch_size,
-                                  shuffle=True, num_workers=p.num_workers)
+                                  shuffle=True, num_workers=p.num_workers, drop_last=True)
         valid_loader = DataLoader(d.valid_dataset, batch_size=p.batch_size,
-                                  shuffle=False, num_workers=p.num_workers)
-    test_loader = DataLoader(d.test_dataset, batch_size=16,
-                             shuffle=False)
+                                  shuffle=False, num_workers=p.num_workers, drop_last=True)
+    else:
+        train_loader = None
+        valid_loader = None
+    test_loader = DataLoader(d.test_dataset, batch_size=p.batch_size,
+                             shuffle=False, drop_last=False)
 
     if log_dir is None:
-        log_dir = 'Run'
-    os.makedirs(log_dir)
+        log_dir = Path('Run')
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     # Freeze layers by name
     def freeze_layers_by_name(model, layer_names):
@@ -63,7 +72,9 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
 
         model_dict = model.state_dict()
 
-        keys_to_load = [k for k in pretrained_dict.keys() if k in model_dict.keys() and not k.startswith('segmentation_head') and not k.startswith('encoder.conv_stem')]
+        keys_to_load = [k for k in pretrained_dict.keys() if
+                        k in model_dict.keys() and not k.startswith('segmentation_head') and not k.startswith(
+                            'encoder.conv_stem')]
         # 1. filter out unnecessary keys
         if not p.model_load_full:
             pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in keys_to_load}
@@ -127,7 +138,7 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
     # TRAIN
     if run_clear_ml:
         task = Task.init(project_name="CellSeg4",
-                         task_name=log_dir,
+                         task_name=str(log_dir),
                          output_uri=False)
         task.connect(vars(p))
     else:
@@ -152,7 +163,7 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
         # do something (save model, change lr, etc.)
         if max_score < valid_logs['iou_score']:
             max_score = valid_logs['iou_score']
-            torch.save(model, os.path.join(log_dir, 'best_model.pth'))
+            torch.save(model, log_dir / 'best_model.pth')
             print('Model saved!')
 
         scheduler.step()
@@ -162,19 +173,163 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
     print('TEST:')
     best_model = model
 
-    # evaluate model on test set
-    test_epoch = smp.utils.train.ValidEpoch(
-        model=best_model,
-        loss=loss,
-        metrics=metrics,
-        device=p.DEVICE,
-    )
-
-    test_logs = test_epoch.run(test_loader)
-    for k, v in test_logs.items():
-        writer.add_scalar(f'{k}/test', v, 0)
-        print(f"{' '.join(k.split('_')).title()}: {v:.2f}")
+    # # evaluate model on test set
+    # test_epoch = smp.utils.train.ValidEpoch(
+    #     model=best_model,
+    #     loss=loss,
+    #     metrics=metrics,
+    #     device=p.DEVICE,
+    # )
+    #
+    # test_logs = test_epoch.run(test_loader)
+    # for k, v in test_logs.items():
+    #     writer.add_scalar(f'{k}/test', v, 0)
+    #     print(f"{' '.join(k.split('_')).title()}: {v:.2f}")
 
     writer.close()
     if run_clear_ml:
         task.close()
+
+    if draw:
+        # visualize results of best saved model
+        iou_metric_list = list()
+
+        out_dir = Path(log_dir) / 'results'
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / 'full').mkdir(parents=True, exist_ok=True)
+        (out_dir / 'compare').mkdir(parents=True, exist_ok=True)
+
+        # for directory in ['image', 'gt', 'pr', 'compare']:
+        #     os.makedirs(os.path.join(out_dir, directory), exist_ok=True)
+
+        W = H = 20
+        img_num = p.channels + 2
+        figsize = (W * img_num, H)
+
+        img_list = list()
+        gt_list = list()
+        pr_list = list()
+        info_list = list()
+
+        class_num = 1 if d.test_dataset.classes is None else len(d.test_dataset.classes)
+        class_num += 1
+        squares = d.test_dataset.squares
+        border = d.test_dataset.border
+
+        for batch_idx, (X, Y) in tqdm(enumerate(test_loader)):
+
+            pred_Y = best_model.predict(X.to(p.DEVICE))
+
+            info = None
+            for img_idx in range(Y.shape[0]):
+                n = batch_idx * p.batch_size + img_idx
+                info = d.test_dataset.info[n]
+
+                image = X[img_idx].squeeze().cpu().numpy()
+                gt_mask = Y[img_idx].squeeze().cpu().numpy().round()
+                pr_mask = pred_Y[img_idx].squeeze().cpu().numpy().round()
+                img_list.append(image)
+                gt_list.append(gt_mask)
+                pr_list.append(pr_mask)
+                info_list.append(info)
+
+                iou_metric = smp.utils.functional.iou(torch.from_numpy(gt_mask), torch.from_numpy(pr_mask))
+                iou_metric_list.append(iou_metric)
+
+            # accumulated
+            if (len(img_list) >= len(squares)) or (batch_idx == len(test_loader) - 1):
+                res_idx = info_list[0]['idx']
+                assert all([info['idx'] == res_idx for info in info_list[:len(squares)]])
+
+                restored_img = unsplit_image(img_list[:len(squares)],
+                                             squares,
+                                             'square_coords',
+                                             border)
+                restored_gt = unsplit_image(gt_list[:len(squares)],
+                                            squares,
+                                            'square_coords',
+                                            border)
+                restored_pr = unsplit_image(pr_list[:len(squares)],
+                                            squares,
+                                            'square_coords',
+                                            border)
+
+                restored_gt_full = restored_gt[0]
+                for idx in range(restored_gt.shape[0]):
+                    restored_gt_full[restored_gt[idx] == 1] = idx + 1
+                restored_pr_full = restored_pr[0]
+                for idx in range(restored_pr.shape[0]):
+                    restored_pr_full[restored_pr[idx] == 1] = idx + 1
+
+                fig, ax = plt.subplots(1, img_num, figsize=figsize)
+                for c_idx in range(d.test_dataset.channels):
+                    ax[c_idx].imshow(restored_img[c_idx], cmap='gray', vmin=0, vmax=1)
+                    ax[c_idx].title.set_text(f'# {c_idx}')
+                ax[p.channels + 0].imshow(restored_gt_full, cmap='gray', vmin=0, vmax=class_num)
+                ax[p.channels + 0].title.set_text('gt_mask')
+                ax[p.channels + 1].imshow(restored_pr_full, cmap='gray', vmin=0, vmax=class_num)
+                ax[p.channels + 1].title.set_text('pr_mask')
+
+                fig.savefig((out_dir / 'full' / res_idx).with_suffix('.png'), bbox_inches='tight')
+                plt.close(fig)
+
+                fig, ax = plt.subplots(1, 2, figsize=(W * 2, H))
+                color_shift_red = (+100, -100, -100)
+                color_shift_green = (-100, +100, -100)
+                color_shift_blue = (-100, -100, +100)
+                color_shift_violet = (+100, -100, +100)
+                color_shift_yellow = (+100, +100, -100)
+
+                img_gt = restored_img[0].copy()
+                img_gt3 = np.stack([img_gt, img_gt, img_gt], axis=2) * 255
+                red_idx = restored_gt[0] == 1
+                for c_idx, c in enumerate(color_shift_red):
+                    img_gt3[..., c_idx][red_idx] += c
+                green_idx = restored_gt[1] == 1
+                for c_idx, c in enumerate(color_shift_green):
+                    img_gt3[..., c_idx][green_idx] += c
+                if restored_gt.shape[0] > 2:
+                    blue_idx = restored_gt[2] == 1
+                    for c_idx, c in enumerate(color_shift_blue):
+                        img_gt3[..., c_idx][blue_idx] += c
+                    yellow_idx = restored_gt[3] == 1
+                    for c_idx, c in enumerate(color_shift_yellow):
+                        img_gt3[..., c_idx][yellow_idx] += c
+
+                np.clip(img_gt3, 0, 255, out=img_gt3)
+                img_gt3 = img_gt3.astype(np.uint8)
+                ax[0].imshow(img_gt3)
+                ax[0].title.set_text('img_gt')
+
+                img_pr = restored_img[0].copy()
+                img_pr3 = np.stack([img_pr, img_pr, img_pr], axis=2) * 255
+                red_idx = restored_pr[0] == 1
+                for c_idx, c in enumerate(color_shift_red):
+                    img_pr3[..., c_idx][red_idx] += c
+                green_idx = restored_pr[1] == 1
+                for c_idx, c in enumerate(color_shift_green):
+                    img_pr3[..., c_idx][green_idx] += c
+                if restored_pr.shape[0] > 2:
+                    blue_idx = restored_pr[2] == 1
+                    for c_idx, c in enumerate(color_shift_blue):
+                        img_pr3[..., c_idx][blue_idx] += c
+                    yellow_idx = restored_pr[3] == 1
+                    for c_idx, c in enumerate(color_shift_yellow):
+                        img_pr3[..., c_idx][yellow_idx] += c
+
+                np.clip(img_pr3, 0, 255, out=img_pr3)
+                img_pr3 = img_pr3.astype(np.uint8)
+                ax[1].imshow(img_pr3)
+                ax[1].title.set_text('img_pr')
+
+                fig.savefig((out_dir / 'compare' / res_idx).with_suffix('.png'), bbox_inches='tight')
+                plt.close(fig)
+
+                img_list = img_list[len(squares):]
+                gt_list = gt_list[len(squares):]
+                pr_list = pr_list[len(squares):]
+                info_list = info_list[len(squares):]
+
+        print(f'IoU = {np.mean(iou_metric_list)}')
+
+    print('DONE!')
