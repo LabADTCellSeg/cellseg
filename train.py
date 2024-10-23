@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from types import SimpleNamespace
@@ -27,15 +26,15 @@ if __name__ == '__main__':
         shuffle = False
         ratio_train = 0.6
         ratio_val = 0.2
-        images_num = 10
-        max_epochs = 1
+        images_num = 5
+        max_epochs = 10
     else:
         run_clear_ml = True
         out_dir = out_root / 'LF1'
         shuffle = True
         ratio_train = 0.6
         ratio_val = 0.2
-        images_num = 200
+        images_num = 250
         max_epochs = 20
 
     dataset_dir = dataset_root / Path('datasets/Cells_2.0_for_Ivan/masked_MSC')
@@ -92,17 +91,18 @@ if __name__ == '__main__':
         max_epochs=max_epochs,
         lr_first=1e-2,
         lr_last=1e-5,
+        scheduler_step_every_batch=True,
     )
 
     params = SimpleNamespace(**params)
 
-    train_dataset, valid_dataset, test_dataset = prepare_data_from_params(params,
-                                                                          shuffle=shuffle,
-                                                                          max_workers=8)
-    # exit()
-    datasets = SimpleNamespace(train_dataset=train_dataset,
-                               valid_dataset=valid_dataset,
-                               test_dataset=test_dataset)
+    fp_data_list, aug_list, dataset_fn = prepare_data_from_params(params,
+                                                                  shuffle=shuffle,
+                                                                  max_workers=8)
+
+    dataset_params = SimpleNamespace(fp_data_list=fp_data_list,
+                                     aug_list=aug_list,
+                                     dataset_fn=dataset_fn)
 
     # encoders = ['resnet34', 'resnet50', 'resnext50_32x4d', 'se_resnet50', 'resnet101', 'vgg19']
     # models = ['Unet', 'MAnet', 'FPN', 'DeepLabV3', 'DeepLabV3Plus']
@@ -116,5 +116,5 @@ if __name__ == '__main__':
             pprint(vars(params))
 
             log_dir = Path(out_dir) / f'{params.model_name}_{params.ENCODER}_{get_str_timestamp()}'
-            experiment(run_clear_ml=run_clear_ml, p=params, d=datasets, log_dir=log_dir, draw=draw)
+            experiment(run_clear_ml=run_clear_ml, p=params, d=dataset_params, log_dir=log_dir, draw=draw)
             torch.cuda.empty_cache()

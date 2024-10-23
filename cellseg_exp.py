@@ -1,4 +1,5 @@
 import os
+import gc
 from pathlib import Path
 import importlib
 
@@ -13,12 +14,16 @@ import segmentation_models_pytorch as smp
 import segmentation_models_pytorch.utils
 from torchinfo import summary
 
-from pprint import pprint
+# from pprint import pprint
 from tqdm import tqdm
 
 from clearml import Task
 
-from cellseg_utils import BCEDiceLoss, unsplit_image
+from cellseg_utils import (
+    BCEDiceLoss,
+    unsplit_image,
+    TrainEpochSchedulerStep
+)
 
 import matplotlib
 
@@ -32,16 +37,17 @@ import matplotlib.pyplot as plt
 
 
 def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
-    if p.max_epochs != 0:
-        train_loader = DataLoader(d.train_dataset, batch_size=p.batch_size,
+    if p.max_epochs != -1:
+        train_dataset = d.dataset_fn(d.fp_data_list.train, d.aug_list.train)
+        train_loader = DataLoader(train_dataset, batch_size=p.batch_size,
                                   shuffle=True, num_workers=p.num_workers, drop_last=True)
-        valid_loader = DataLoader(d.valid_dataset, batch_size=p.batch_size,
+
+        valid_dataset = d.dataset_fn(d.fp_data_list.valid, d.aug_list.valid)
+        valid_loader = DataLoader(valid_dataset, batch_size=p.batch_size,
                                   shuffle=False, num_workers=p.num_workers, drop_last=True)
     else:
         train_loader = None
         valid_loader = None
-    test_loader = DataLoader(d.test_dataset, batch_size=p.batch_size,
-                             shuffle=False, drop_last=False)
 
     if log_dir is None:
         log_dir = Path('Run')
@@ -55,9 +61,9 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
                     param.requires_grad = False
 
     # create segmentation model with pretrained encoder
-    model_func = getattr(importlib.import_module('segmentation_models_pytorch'),
-                         p.model_name)
-    model = model_func(
+    model_fn = getattr(importlib.import_module('segmentation_models_pytorch'),
+                       p.model_name)
+    model = model_fn(
         encoder_name=p.ENCODER,
         encoder_weights=p.ENCODER_WEIGHTS,
         in_channels=p.channels,
@@ -84,9 +90,8 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
         model.load_state_dict(model_dict)
 
         # Freeze the specified layers
-        layers_to_freeze = [k for k in pretrained_dict.keys() if k in model_dict.keys() and k.startswith('encoder')]
+        # layers_to_freeze = [k for k in pretrained_dict.keys() if k in model_dict.keys() and k.startswith('encoder')]
         # freeze_layers_by_name(model, layers_to_freeze)
-
         # # Verify which layers are frozen
         # for name, param in model.named_parameters():
         #     print(name, param.requires_grad)
@@ -102,9 +107,15 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
 
     loss = BCEDiceLoss(bce_weight=p.bce_weight)
 
-    metrics = [
-        smp.utils.metrics.IoU(threshold=0.5),
-    ]
+    iou = smp.utils.metrics.IoU(threshold=0.5)
+    iou.__name__ = 'IoU'
+
+    metrics = [iou]
+    for c in range(p.channels):
+        ignore_channels = [idx for idx in range(p.channels) if idx != c]
+        c_iou = smp.utils.metrics.IoU(threshold=0.5, ignore_channels=ignore_channels)
+        c_iou.__name__ = f'IoU_{c}'
+        metrics.append(c_iou)
 
     optimizer = torch.optim.Adam([
         dict(params=model.parameters(), lr=p.lr_first),
@@ -113,13 +124,23 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
     # a, b = next(iter(test_loader))
     # ans = loss(b, b)
     # print(ans)
+
     # create epoch runners
     # it is a simple loop of iterating over dataloader`s samples
-    train_epoch = smp.utils.train.TrainEpoch(
+    if p.scheduler_step_every_batch:
+        gamma = pow(p.lr_last / p.lr_first, 1 / (p.max_epochs * len(train_loader))) if p.max_epochs != 0 else 0
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=gamma, last_epoch=-1)
+
+    else:
+        gamma = pow(p.lr_last / p.lr_first, 1 / p.max_epochs) if p.max_epochs != 0 else 0
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=gamma, last_epoch=-1)
+    train_epoch = TrainEpochSchedulerStep(
         model,
         loss=loss,
         metrics=metrics,
         optimizer=optimizer,
+        scheduler=scheduler,
+        scheduler_step_every_batch=p.scheduler_step_every_batch,
         device=p.DEVICE,
         verbose=True,
     )
@@ -130,10 +151,6 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
         device=p.DEVICE,
         verbose=True,
     )
-
-    # if p.max_epochs != 0:
-    gamma = pow(p.lr_last / p.lr_first, 1 / p.max_epochs) if p.max_epochs != 0 else 0
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=gamma, last_epoch=-1)
 
     # TRAIN
     if run_clear_ml:
@@ -161,30 +178,41 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
             # print(f"{' '.join(k.split('_')).title()}: {v:.2f}")
 
         # do something (save model, change lr, etc.)
-        if max_score < valid_logs['iou_score']:
-            max_score = valid_logs['iou_score']
+        if max_score < valid_logs['IoU']:
+            max_score = valid_logs['IoU']
             torch.save(model, log_dir / 'best_model.pth')
             print('Model saved!')
 
-        scheduler.step()
+        if not p.scheduler_step_every_batch:
+            scheduler.step()
 
     # load best saved checkpoint
     print('-' * 80)
     print('TEST:')
-    best_model = model
+    # best_model = model
 
-    # # evaluate model on test set
-    # test_epoch = smp.utils.train.ValidEpoch(
-    #     model=best_model,
-    #     loss=loss,
-    #     metrics=metrics,
-    #     device=p.DEVICE,
-    # )
-    #
-    # test_logs = test_epoch.run(test_loader)
-    # for k, v in test_logs.items():
-    #     writer.add_scalar(f'{k}/test', v, 0)
-    #     print(f"{' '.join(k.split('_')).title()}: {v:.2f}")
+    del train_loader
+    del train_dataset
+    del valid_loader
+    del valid_dataset
+    gc.collect()
+
+    test_dataset = d.dataset_fn(d.fp_data_list.test, d.aug_list.valid)
+    test_loader = DataLoader(test_dataset, batch_size=p.batch_size,
+                             shuffle=False, drop_last=False)
+
+    # evaluate model on test set
+    test_epoch = smp.utils.train.ValidEpoch(
+        model=model,
+        loss=loss,
+        metrics=metrics,
+        device=p.DEVICE,
+    )
+
+    test_logs = test_epoch.run(test_loader)
+    for k, v in test_logs.items():
+        writer.add_scalar(f'{k}/test', v, 0)
+        print(f"{' '.join(k.split('_')).title()}: {v:.2f}")
 
     writer.close()
     if run_clear_ml:
@@ -202,32 +230,32 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
         # for directory in ['image', 'gt', 'pr', 'compare']:
         #     os.makedirs(os.path.join(out_dir, directory), exist_ok=True)
 
-        W = H = 20
+        w = h = 20
         img_num = p.channels + 2
-        figsize = (W * img_num, H)
+        figsize = (w * img_num, h)
 
         img_list = list()
         gt_list = list()
         pr_list = list()
         info_list = list()
 
-        class_num = 1 if d.test_dataset.classes is None else len(d.test_dataset.classes)
+        class_num = 1 if test_dataset.classes is None else len(test_dataset.classes)
         class_num += 1
-        squares = d.test_dataset.squares
-        border = d.test_dataset.border
+        squares = test_dataset.squares
+        border = test_dataset.border
 
-        for batch_idx, (X, Y) in tqdm(enumerate(test_loader)):
+        for batch_idx, (x, y) in tqdm(enumerate(test_loader)):
 
-            pred_Y = best_model.predict(X.to(p.DEVICE))
+            pred_y = model.predict(x.to(p.DEVICE))
 
-            info = None
-            for img_idx in range(Y.shape[0]):
+            # info = None
+            for img_idx in range(y.shape[0]):
                 n = batch_idx * p.batch_size + img_idx
-                info = d.test_dataset.info[n]
+                info = test_dataset.info[n]
 
-                image = X[img_idx].squeeze().cpu().numpy()
-                gt_mask = Y[img_idx].squeeze().cpu().numpy().round()
-                pr_mask = pred_Y[img_idx].squeeze().cpu().numpy().round()
+                image = x[img_idx].squeeze().cpu().numpy()
+                gt_mask = y[img_idx].squeeze().cpu().numpy().round()
+                pr_mask = pred_y[img_idx].squeeze().cpu().numpy().round()
                 img_list.append(image)
                 gt_list.append(gt_mask)
                 pr_list.append(pr_mask)
@@ -262,7 +290,7 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
                     restored_pr_full[restored_pr[idx] == 1] = idx + 1
 
                 fig, ax = plt.subplots(1, img_num, figsize=figsize)
-                for c_idx in range(d.test_dataset.channels):
+                for c_idx in range(test_dataset.channels):
                     ax[c_idx].imshow(restored_img[c_idx], cmap='gray', vmin=0, vmax=1)
                     ax[c_idx].title.set_text(f'# {c_idx}')
                 ax[p.channels + 0].imshow(restored_gt_full, cmap='gray', vmin=0, vmax=class_num)
@@ -273,11 +301,11 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
                 fig.savefig((out_dir / 'full' / res_idx).with_suffix('.png'), bbox_inches='tight')
                 plt.close(fig)
 
-                fig, ax = plt.subplots(1, 2, figsize=(W * 2, H))
+                fig, ax = plt.subplots(1, 2, figsize=(w * 2, h))
                 color_shift_red = (+100, -100, -100)
                 color_shift_green = (-100, +100, -100)
                 color_shift_blue = (-100, -100, +100)
-                color_shift_violet = (+100, -100, +100)
+                # color_shift_violet = (+100, -100, +100)
                 color_shift_yellow = (+100, +100, -100)
 
                 img_gt = restored_img[0].copy()

@@ -1,9 +1,9 @@
-# import os
-# import os.path as osp
 import random
 import re
 import time
 from datetime import datetime
+from types import SimpleNamespace
+import sys
 
 import numpy as np
 
@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset as BaseDataset
 import segmentation_models_pytorch as smp
+import segmentation_models_pytorch.utils
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -120,24 +121,24 @@ def draw_square(image, sq, color):
         image[c_idx][sq[3], sq[0]:sq[2]] = color[c_idx]
 
 
-def my_train_test_split(X, y, ratio_train, ratio_val, shuffle=True, seed=42):
-    idx = np.arange(X.shape[0])
+def my_train_test_split(x, y, ratio_train, ratio_val, shuffle=True, seed=42):
+    idx = np.arange(x.shape[0])
     np.random.seed(seed)
     if shuffle:
         np.random.shuffle(idx)
 
-    limit_train = int(ratio_train * X.shape[0])
-    limit_val = int((ratio_train + ratio_val) * X.shape[0])
+    limit_train = int(ratio_train * x.shape[0])
+    limit_val = int((ratio_train + ratio_val) * x.shape[0])
 
     idx_train = idx[:limit_train]
     idx_val = idx[limit_train:limit_val]
     idx_test = idx[limit_val:]
 
-    X_train, y_train = X[idx_train], y[idx_train]
-    X_val, y_val = X[idx_val], y[idx_val]
-    X_test, y_test = X[idx_test], y[idx_test]
+    x_train, y_train = x[idx_train], y[idx_train]
+    x_val, y_val = x[idx_val], y[idx_val]
+    x_test, y_test = x[idx_test], y[idx_test]
 
-    return X_train, X_val, X_test, y_train, y_val, y_test
+    return x_train, x_val, x_test, y_train, y_val, y_test
 
 
 def get_all_fp_data(exps_dir, exp_class_dict):
@@ -331,10 +332,10 @@ class CellDataset4(BaseDataset):
     @staticmethod
     def _prepare_mask(mask, cls_num=1, cls=0, contour_thickness=2):
         mask_contour = mask.copy()
-        contours, hierarchy = cv2.findContours(mask_contour,
-                                               cv2.RETR_EXTERNAL,
-                                               cv2.CHAIN_APPROX_SIMPLE)
-        _ = cv2.drawContours(mask_contour, contours, -1, 2, contour_thickness)
+        contours, _ = cv2.findContours(mask_contour,
+                                       cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        _ = cv2.drawContours(mask_contour, contours, contourIdx=-1, color=[2], thickness=contour_thickness)
         # mask_contour = mask_contour.transpose(2, 0, 1)
         # mask_contour = mask_contour
         mask = np.zeros((mask.shape[0], mask.shape[1], cls_num + 1), dtype=mask.dtype)
@@ -585,7 +586,7 @@ def prepare_data(dataset_dir,
     total_len = len(all_fp_data)
     train_num = int(total_len * ratio_train)
     val_num = int(total_len * ratio_val)
-    test_num = total_len - val_num
+    # test_num = total_len - val_num
 
     train_fp_data = all_fp_data[:train_num]
     val_fp_data = all_fp_data[train_num:train_num + val_num]
@@ -617,43 +618,94 @@ def prepare_data(dataset_dir,
     else:
         classes = None
 
-    train_dataset = CellDataset4(train_fp_data,
-                                 full_size=full_size,
-                                 add_shadow_to_img=add_shadow_to_img,
-                                 squares=squares,
-                                 border=border,
-                                 augmentation=get_training_augmentation(target_size=transform_size),
-                                 preprocessing=preprocessing,
-                                 classes=classes,
-                                 target_size=target_size,
-                                 contour_thickness=contour_thickness,
-                                 max_workers=max_workers
-                                 )
+    def dataset_fn(fp_data, aug):
+        return CellDataset4(fp_data,
+                            full_size=full_size,
+                            add_shadow_to_img=add_shadow_to_img,
+                            squares=squares,
+                            border=border,
+                            augmentation=aug,
+                            preprocessing=preprocessing,
+                            classes=classes,
+                            target_size=target_size,
+                            contour_thickness=contour_thickness,
+                            max_workers=max_workers
+                            )
 
-    valid_dataset = CellDataset4(val_fp_data,
-                                 full_size=full_size,
-                                 add_shadow_to_img=add_shadow_to_img,
-                                 squares=squares,
-                                 border=border,
-                                 augmentation=get_validation_augmentation(target_size=transform_size),
-                                 preprocessing=preprocessing,
-                                 classes=classes,
-                                 target_size=target_size,
-                                 contour_thickness=contour_thickness,
-                                 max_workers=max_workers
-                                 )
+    fp_data_list = SimpleNamespace(train=train_fp_data,
+                                   valid=val_fp_data,
+                                   test=test_fp_data)
+    aug_list = SimpleNamespace(train=get_training_augmentation(target_size=transform_size),
+                               valid=get_validation_augmentation(target_size=transform_size),
+                               test=get_validation_augmentation(target_size=transform_size))
 
-    test_dataset = CellDataset4(test_fp_data,
-                                full_size=full_size,
-                                add_shadow_to_img=add_shadow_to_img,
-                                squares=squares,
-                                border=border,
-                                augmentation=get_validation_augmentation(target_size=transform_size),
-                                preprocessing=preprocessing,
-                                classes=classes,
-                                target_size=target_size,
-                                contour_thickness=contour_thickness,
-                                max_workers=max_workers
-                                )
+    return fp_data_list, aug_list, dataset_fn
 
-    return train_dataset, valid_dataset, test_dataset
+
+class TrainEpochSchedulerStep(smp.utils.train.Epoch):
+    def __init__(self, model, loss, metrics, optimizer, scheduler, scheduler_step_every_batch=False,
+                 device="cpu", verbose=True):
+        super().__init__(
+            model=model,
+            loss=loss,
+            metrics=metrics,
+            stage_name="train",
+            device=device,
+            verbose=verbose,
+        )
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.scheduler_step_every_batch = scheduler_step_every_batch
+
+    def on_epoch_start(self):
+        self.model.train()
+
+    def batch_update(self, x, y):
+        self.optimizer.zero_grad()
+        prediction = self.model.forward(x)
+        loss = self.loss(prediction, y)
+        loss.backward()
+        self.optimizer.step()
+        if self.scheduler_step_every_batch:
+            self.scheduler.step()
+        return loss, prediction
+
+    def run(self, dataloader):
+
+        self.on_epoch_start()
+
+        logs = {}
+        loss_meter = smp.utils.train.AverageValueMeter()
+        metrics_meters = {metric.__name__: smp.utils.train.AverageValueMeter() for metric in self.metrics}
+
+        with tqdm(
+                dataloader,
+                desc=self.stage_name,
+                file=sys.stdout,
+                disable=not self.verbose,
+        ) as iterator:
+            for x, y in iterator:
+                x, y = x.to(self.device), y.to(self.device)
+                loss, y_pred = self.batch_update(x, y)
+
+                # update loss logs
+                loss_value = loss.cpu().detach().numpy()
+                loss_meter.add(loss_value)
+                loss_logs = {self.loss.__name__: loss_meter.mean}
+                logs.update(loss_logs)
+
+                # update metrics logs
+                for metric_fn in self.metrics:
+                    metric_value = metric_fn(y_pred, y).cpu().detach().numpy()
+                    metrics_meters[metric_fn.__name__].add(metric_value)
+                metrics_logs = {k: v.mean for k, v in metrics_meters.items()}
+                logs.update(metrics_logs)
+
+                lr_logs = {'LR': self.scheduler.get_last_lr()[0]}
+                logs.update(lr_logs)
+
+                if self.verbose:
+                    s = self._format_logs(logs)
+                    iterator.set_postfix_str(s)
+
+        return logs
