@@ -1,4 +1,7 @@
 import os
+import sys
+import inspect
+
 import gc
 from pathlib import Path
 import importlib
@@ -25,6 +28,11 @@ from cellseg_utils import (
     TrainEpochSchedulerStep
 )
 
+import cellseg_models
+from cellseg_models import (
+    CustomUNetWithSeparateDecoderForBoundary,
+    create_model_with_separate_decoder_for_boundary
+)
 import matplotlib
 
 if os.environ.get('DISPLAY', '') == '':
@@ -49,6 +57,9 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
         train_loader = None
         valid_loader = None
 
+    print(train_dataset[0][0].shape)
+    print(train_dataset[0][1].shape)
+    # exit()
     if log_dir is None:
         log_dir = Path('Run')
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -60,16 +71,24 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
                 if layer_name in name:
                     param.requires_grad = False
 
-    # create segmentation model with pretrained encoder
-    model_fn = getattr(importlib.import_module('segmentation_models_pytorch'),
-                       p.model_name)
-    model = model_fn(
-        encoder_name=p.ENCODER,
-        encoder_weights=p.ENCODER_WEIGHTS,
-        in_channels=p.channels,
-        classes=p.classes_num,
-        activation=p.ACTIVATION,
-    )
+    # # create segmentation model with pretrained encoder
+    # model_fn = getattr(importlib.import_module('segmentation_models_pytorch'), p.model_name)
+    # model = model_fn(
+    #     encoder_name=p.ENCODER,
+    #     encoder_weights=p.ENCODER_WEIGHTS,
+    #     in_channels=p.channels,
+    #     classes=p.classes_num,
+    #     activation=p.ACTIVATION,
+    # )
+    model = create_model_with_separate_decoder_for_boundary(model_name=p.model_name,
+                                                            encoder_name=p.ENCODER,
+                                                            encoder_weights=p.ENCODER_WEIGHTS,
+                                                            in_channels=p.channels,
+                                                            classes=p.classes_num - 1,
+                                                            boundary_classes=1,
+                                                            activation=p.ACTIVATION,
+                                                            )
+
     if p.model_load_fp is None:
         print('created new')
     else:
@@ -194,13 +213,16 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
 
     del train_loader
     del train_dataset
-    del valid_loader
-    del valid_dataset
+    # del valid_loader
+    # del valid_dataset
     gc.collect()
 
-    test_dataset = d.dataset_fn(d.fp_data_list.test, d.aug_list.valid)
-    test_loader = DataLoader(test_dataset, batch_size=p.batch_size,
-                             shuffle=False, drop_last=False)
+    # test_dataset = d.dataset_fn(d.fp_data_list.test, d.aug_list.valid)
+    # test_loader = DataLoader(test_dataset, batch_size=p.batch_size,
+    #                          shuffle=False, drop_last=False)
+
+    test_dataset = valid_dataset
+    test_loader = valid_loader
 
     # evaluate model on test set
     test_epoch = smp.utils.train.ValidEpoch(
@@ -268,6 +290,8 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
             # accumulated
             if (len(img_list) >= len(squares)) or (batch_idx == len(test_loader) - 1):
                 res_idx = info_list[0]['idx']
+                print(f'save results for: {res_idx}')
+
                 assert all([info['idx'] == res_idx for info in info_list[:len(squares)]])
 
                 restored_img = unsplit_image(img_list[:len(squares)],
@@ -314,16 +338,16 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
                 red_idx = restored_gt[0] == 1
                 for c_idx, c in enumerate(color_shift_red):
                     img_gt3[..., c_idx][red_idx] += c
-                green_idx = restored_gt[1] == 1
-                for c_idx, c in enumerate(color_shift_green):
-                    img_gt3[..., c_idx][green_idx] += c
                 if restored_gt.shape[0] > 2:
-                    blue_idx = restored_gt[2] == 1
+                    blue_idx = restored_gt[1] == 1
                     for c_idx, c in enumerate(color_shift_blue):
                         img_gt3[..., c_idx][blue_idx] += c
-                    yellow_idx = restored_gt[3] == 1
+                    yellow_idx = restored_gt[2] == 1
                     for c_idx, c in enumerate(color_shift_yellow):
                         img_gt3[..., c_idx][yellow_idx] += c
+                green_idx = restored_gt[-1] == 1
+                for c_idx, c in enumerate(color_shift_green):
+                    img_gt3[..., c_idx][green_idx] += c
 
                 np.clip(img_gt3, 0, 255, out=img_gt3)
                 img_gt3 = img_gt3.astype(np.uint8)
@@ -335,16 +359,17 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
                 red_idx = restored_pr[0] == 1
                 for c_idx, c in enumerate(color_shift_red):
                     img_pr3[..., c_idx][red_idx] += c
-                green_idx = restored_pr[1] == 1
-                for c_idx, c in enumerate(color_shift_green):
-                    img_pr3[..., c_idx][green_idx] += c
+
                 if restored_pr.shape[0] > 2:
-                    blue_idx = restored_pr[2] == 1
+                    blue_idx = restored_pr[1] == 1
                     for c_idx, c in enumerate(color_shift_blue):
                         img_pr3[..., c_idx][blue_idx] += c
-                    yellow_idx = restored_pr[3] == 1
+                    yellow_idx = restored_pr[2] == 1
                     for c_idx, c in enumerate(color_shift_yellow):
                         img_pr3[..., c_idx][yellow_idx] += c
+                green_idx = restored_pr[-1] == 1
+                for c_idx, c in enumerate(color_shift_green):
+                    img_pr3[..., c_idx][green_idx] += c
 
                 np.clip(img_pr3, 0, 255, out=img_pr3)
                 img_pr3 = img_pr3.astype(np.uint8)
