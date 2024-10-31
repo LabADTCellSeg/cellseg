@@ -111,8 +111,9 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
     iou.__name__ = 'IoU'
 
     metrics = [iou]
-    for c in range(p.channels):
-        ignore_channels = [idx for idx in range(p.channels) if idx != c]
+    for c in range(p.classes_num):
+        ignore_channels = [idx for idx in range(p.classes_num) if idx != c]
+        ignore_channels = torch.tensor(ignore_channels, dtype=torch.int64).to(p.DEVICE)
         c_iou = smp.utils.metrics.IoU(threshold=0.5, ignore_channels=ignore_channels)
         c_iou.__name__ = f'IoU_{c}'
         metrics.append(c_iou)

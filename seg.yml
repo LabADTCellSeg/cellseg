@@ -1,0 +1,14 @@
+name: seg
+channels:
+  - defaults
+dependencies:
+  - ipykernel
+  - matplotlib
+  - numpy
+  - pandas
+  - python=3.10
+  - pytorch
+  - pytorch-cuda
+  - tensorboard
+  - torchvision
+  - pip

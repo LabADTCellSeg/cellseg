@@ -8,17 +8,21 @@ import torch
 from cellseg_exp import experiment
 from cellseg_utils import prepare_data_from_params, get_str_timestamp
 
+TORCH_HUB_DIR = '/storage0/pia/python/hub/'
+
+torch.hub.set_dir(TORCH_HUB_DIR)
+
 if __name__ == '__main__':
     draw = True
     test = False
-    multiclass = False
+    multiclass = True
     add_shadow_to_img = True
     square_a = 256
     border = 10
-    contour_thickness = 4
+    contour_thickness = 6
 
     out_root = Path('out')
-    dataset_root = Path('.')
+    dataset_root = Path('/storage0/pia/python/cellseg/')
 
     if test:
         run_clear_ml = False
@@ -27,14 +31,14 @@ if __name__ == '__main__':
         ratio_train = 0.6
         ratio_val = 0.2
         images_num = 5
-        max_epochs = 10
+        max_epochs = 1
     else:
-        run_clear_ml = True
+        run_clear_ml = False
         out_dir = out_root / 'LF1'
         shuffle = True
         ratio_train = 0.6
         ratio_val = 0.2
-        images_num = 250
+        images_num = None
         max_epochs = 20
 
     dataset_dir = dataset_root / Path('datasets/Cells_2.0_for_Ivan/masked_MSC')
@@ -79,7 +83,7 @@ if __name__ == '__main__':
         classes_num=classes_num,
         channels=channels,
         num_workers=1,
-        batch_size=8,
+        batch_size=40,
         bce_weight=0.1,
 
         ENCODER='timm-efficientnet-b0',
@@ -107,7 +111,7 @@ if __name__ == '__main__':
     # encoders = ['resnet34', 'resnet50', 'resnext50_32x4d', 'se_resnet50', 'resnet101', 'vgg19']
     # models = ['Unet', 'MAnet', 'FPN', 'DeepLabV3', 'DeepLabV3Plus']
     # models = ['DeepLabV3', 'DeepLabV3Plus']
-    encoders = ['timm-efficientnet-b6']
+    encoders = ['timm-efficientnet-b8']
     models = ['Unet']
     for encoder in encoders:
         params.ENCODER = encoder

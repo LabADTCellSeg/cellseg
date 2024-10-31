@@ -414,7 +414,7 @@ def get_training_augmentation(target_size=None):
 
         A.RandomResizedCrop(height=target_size[1], width=target_size[0], scale=(0.75, 1.0), p=0.5),
 
-        A.GaussNoise(p=0.2),
+        # A.GaussNoise(p=0.2),
 
         A.OneOf(
             [
@@ -432,7 +432,7 @@ def get_training_augmentation(target_size=None):
             ],
             p=0.9,
         ),
-        ApplyToImageOnly(A.HueSaturationValue(p=0.9)),  # Применяем только к основному изображению
+        # ApplyToImageOnly(A.HueSaturationValue(p=0.9)),  # Применяем только к основному изображению
     ]
     if target_size is not None:
         train_transform.append(A.Resize(height=target_size[1], width=target_size[0], always_apply=True))
@@ -470,7 +470,7 @@ def get_preprocessing(preprocessing_fn):
         A.Lambda(image=preprocessing_fn),
         A.Lambda(image=to_tensor, mask=to_tensor),
     ]
-    return A.Compose(_transform, is_check_shapes=False)
+    return A.Compose(_transform, is_check_shapes=False, additional_targets={'shadow': 'image'})
 
 
 def dice_loss(pred, target, smooth=1.):
