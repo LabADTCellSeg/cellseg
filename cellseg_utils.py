@@ -222,8 +222,10 @@ class CellDataset4(BaseDataset):
         self.shadows = list()
         self.info = list()
 
-        # self.default_processing()
-        self.parallel_processing(max_workers=self.max_workers)  # запуск параллельной обработки
+        if self.max_workers <= 0:
+            self.default_processing()
+        else:
+            self.parallel_processing(max_workers=self.max_workers)  # запуск параллельной обработки
 
         if len(self.images) != 0:
             self.channels = self.images[0].shape[-1]
@@ -237,7 +239,7 @@ class CellDataset4(BaseDataset):
         assert img.shape[:-1] == mask.shape[:-1]
 
         if self.classes is not None:
-            mask = self._prepare_mask(mask, cls_num=len(self.classes), cls=fp_data['cls'],
+            mask = self._prepare_mask(mask, cls_num=len(self.classes), cls=self.classes.index(fp_data['cls']),
                                       contour_thickness=self.contour_thickness)
         else:
             mask = self._prepare_mask(mask, cls_num=1, cls=0, contour_thickness=self.contour_thickness)
@@ -510,6 +512,42 @@ class BCEDiceLoss:
         self.device = device
 
 
+class WeightedBCEDiceLoss:
+    __name__ = 'bce_dice'
+
+    def __init__(self, bce_weight=0.5, boundary_weight=0.99):
+        self.bce_weight = bce_weight
+        self.device = 'cpu'
+        self.boundary_weight = boundary_weight
+        if self.bce_weight == 0:
+            self.__call__ = self.dice_loss_calc
+        elif self.bce_weight == 1:
+            self.__call__ = self.bce_loss_calc
+
+    def __call__(self, pred, target):
+        # Рассчитываем BCE и Dice для каждого канала
+        bce_cells = self.bce_loss_calc(pred[:, 0, :, :], target[:, 0, :, :])
+        bce_boundaries = self.bce_loss_calc(pred[:, 1, :, :], target[:, 1, :, :])
+
+        dice_cells = self.dice_loss_calc(torch.sigmoid(pred[:, 0, :, :]), target[:, 0, :, :])
+        dice_boundaries = self.dice_loss_calc(torch.sigmoid(pred[:, 1, :, :]), target[:, 1, :, :])
+
+        # Применяем разные веса для границ
+        bce_loss = (bce_cells + self.boundary_weight * bce_boundaries) / (1 + self.boundary_weight)
+        dice_loss = (dice_cells + self.boundary_weight * dice_boundaries) / (1 + self.boundary_weight)
+
+        return bce_loss * self.bce_weight + dice_loss * (1 - self.bce_weight)
+
+    def dice_loss_calc(self, pred, target):
+        return dice_loss(torch.sigmoid(pred), target).to(self.device)
+
+    def bce_loss_calc(self, pred, target):
+        return F.binary_cross_entropy_with_logits(pred, target, reduction='mean').to(self.device)
+
+    def to(self, device):
+        self.device = device
+
+
 def parse_filename_nd2(filename):
     # Определяем шаблон для поиска
     pattern = r'^(.*?)_LF(\d+)-P(\d+)_(.*?)_(\d+)\.nd2$'
@@ -579,9 +617,9 @@ def prepare_data(dataset_dir,
                  contour_thickness=2,
                  max_workers=8):
     all_fp_data = get_all_fp_data(dataset_dir, exp_class_dict)
-    all_fp_data = all_fp_data[:images_num]
     if shuffle:
-        random.shuffle(all_fp_data)
+        random.Random(42).shuffle(all_fp_data)
+    all_fp_data = all_fp_data[:images_num]
 
     total_len = len(all_fp_data)
     train_num = int(total_len * ratio_train)
@@ -612,7 +650,7 @@ def prepare_data(dataset_dir,
     transform_size = squares[0]['square_with_borders_coords'][2:]
 
     if multiclass:
-        classes = [v for v in exp_class_dict.values()]
+        classes = list(set([v for v in exp_class_dict.values()]))
         classes.sort()
 
     else:

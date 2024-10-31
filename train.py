@@ -11,7 +11,8 @@ from cellseg_utils import prepare_data_from_params, get_str_timestamp
 if __name__ == '__main__':
     draw = True
     test = False
-    multiclass = False
+
+    multiclass = True
     add_shadow_to_img = True
     square_a = 256
     border = 10
@@ -23,18 +24,18 @@ if __name__ == '__main__':
     if test:
         run_clear_ml = False
         out_dir = out_root / 'test'
-        shuffle = False
-        ratio_train = 0.6
+        shuffle = True
+        ratio_train = 0.8
         ratio_val = 0.2
-        images_num = 5
-        max_epochs = 10
+        images_num = 100
+        max_epochs = 0
     else:
         run_clear_ml = True
         out_dir = out_root / 'LF1'
         shuffle = True
-        ratio_train = 0.6
+        ratio_train = 0.8
         ratio_val = 0.2
-        images_num = 250
+        images_num = 100
         max_epochs = 20
 
     dataset_dir = dataset_root / Path('datasets/Cells_2.0_for_Ivan/masked_MSC')
@@ -44,25 +45,29 @@ if __name__ == '__main__':
     resize_coef = 1
 
     dataset_dir = lf_dir
+    # exp_class_dict = {'+2024-05-05-LF1-p6-sl2': 6,
+    #                   '+2024-05-06-LF1-p12': 12,
+    #                   '+2024-05-06-LF1p9-sl2': 9,
+    #                   '+2024-05-07-LF1p15': 15,
+    #                   '+2024-05-08-LF1p18sl2': 18,
+    #                   '+2024-05-31-LF1-p22': 22}
     exp_class_dict = {'+2024-05-05-LF1-p6-sl2': 6,
                       '+2024-05-06-LF1-p12': 12,
-                      '+2024-05-06-LF1p9-sl2': 9,
-                      '+2024-05-07-LF1p15': 15,
+                      '+2024-05-06-LF1p9-sl2': 6,
+                      '+2024-05-07-LF1p15': 12,
                       '+2024-05-08-LF1p18sl2': 18,
-                      '+2024-05-31-LF1-p22': 22}
+                      '+2024-05-31-LF1-p22': 18}
 
     channels = 3
     if add_shadow_to_img:
         channels += 1  # shadow
-    classes_num = len(exp_class_dict) if multiclass else 1
+    classes_num = len(set(exp_class_dict.values())) if multiclass else 1
     classes_num += 1  # border
 
     square_a = square_a - (border * 2)
     params = dict(
         model_name='Unet',
         model_load_fp=None,
-        # model_load_fp='out/MSC_filtered_mc/Unet_timm-efficientnet-b0_20240425_160139/best_model.pth',
-        # model_load_fp=os.path.join('out', 'MSC', 'Unet_timm-efficientnet-b6_20240417_144310', 'best_model.pth'),
         # model_load_fp=Path('out/LF1') / 'Unet_timm-efficientnet-b6_20241012_154141' / 'best_model.pth',
         model_load_full=True,
 
@@ -80,7 +85,7 @@ if __name__ == '__main__':
         channels=channels,
         num_workers=1,
         batch_size=8,
-        bce_weight=0.1,
+        bce_weight=0.5,
 
         ENCODER='timm-efficientnet-b0',
         # 'resnet101',  # 'efficientnet-b2',  # 'timm-efficientnet-b8',  # 'efficientnet-b0'
