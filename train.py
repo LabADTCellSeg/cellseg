@@ -14,13 +14,13 @@ torch.hub.set_dir(TORCH_HUB_DIR)
 
 if __name__ == '__main__':
     draw = True
-    test = True
+    test = False
 
-    multiclass = False
+    multiclass = True
     add_shadow_to_img = True
     square_a = 256
     border = 10
-    contour_thickness = 2
+    contour_thickness = 4
 
     out_root = Path('out')
     dataset_root = Path('/storage0/pia/python/cellseg/')
