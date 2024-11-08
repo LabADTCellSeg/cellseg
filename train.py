@@ -14,16 +14,13 @@ torch.hub.set_dir(TORCH_HUB_DIR)
 
 if __name__ == '__main__':
     draw = True
-    test = False
-<<<<<<< HEAD
-=======
+    test = True
 
->>>>>>> ec4c4e11f2298b2a7b7e27ab1cc05e5587f8f0d5
-    multiclass = True
+    multiclass = False
     add_shadow_to_img = True
     square_a = 256
     border = 10
-    contour_thickness = 6
+    contour_thickness = 2
 
     out_root = Path('out')
     dataset_root = Path('/storage0/pia/python/cellseg/')
@@ -34,25 +31,16 @@ if __name__ == '__main__':
         shuffle = True
         ratio_train = 0.8
         ratio_val = 0.2
-<<<<<<< HEAD
         images_num = 5
         max_epochs = 1
-=======
-        images_num = 100
-        max_epochs = 0
->>>>>>> ec4c4e11f2298b2a7b7e27ab1cc05e5587f8f0d5
     else:
         run_clear_ml = False
         out_dir = out_root / 'LF1'
         shuffle = True
         ratio_train = 0.8
         ratio_val = 0.2
-<<<<<<< HEAD
         images_num = None
-=======
-        images_num = 100
->>>>>>> ec4c4e11f2298b2a7b7e27ab1cc05e5587f8f0d5
-        max_epochs = 20
+        max_epochs = 50
 
     dataset_dir = dataset_root / Path('datasets/Cells_2.0_for_Ivan/masked_MSC')
     dir01 = dataset_dir / 'pics 2024-20240807T031703Z-001' / 'pics 2024'
@@ -62,14 +50,14 @@ if __name__ == '__main__':
 
     dataset_dir = lf_dir
     # exp_class_dict = {'+2024-05-05-LF1-p6-sl2': 6,
-    #                   '+2024-05-06-LF1-p12': 12,
     #                   '+2024-05-06-LF1p9-sl2': 9,
+    #                   '+2024-05-06-LF1-p12': 12,
     #                   '+2024-05-07-LF1p15': 15,
     #                   '+2024-05-08-LF1p18sl2': 18,
     #                   '+2024-05-31-LF1-p22': 22}
     exp_class_dict = {'+2024-05-05-LF1-p6-sl2': 6,
-                      '+2024-05-06-LF1-p12': 12,
                       '+2024-05-06-LF1p9-sl2': 6,
+                      '+2024-05-06-LF1-p12': 12,
                       '+2024-05-07-LF1p15': 12,
                       '+2024-05-08-LF1p18sl2': 18,
                       '+2024-05-31-LF1-p22': 18}
@@ -82,7 +70,7 @@ if __name__ == '__main__':
 
     square_a = square_a - (border * 2)
     params = dict(
-        model_name='Unet',
+        model_name=None,
         model_load_fp=None,
         # model_load_fp=Path('out/LF1') / 'Unet_timm-efficientnet-b6_20241012_154141' / 'best_model.pth',
         model_load_full=True,
@@ -99,16 +87,11 @@ if __name__ == '__main__':
         border=border,
         classes_num=classes_num,
         channels=channels,
-        num_workers=1,
-<<<<<<< HEAD
-        batch_size=40,
-        bce_weight=0.1,
-=======
-        batch_size=8,
-        bce_weight=0.5,
->>>>>>> ec4c4e11f2298b2a7b7e27ab1cc05e5587f8f0d5
+        num_workers=4,
+        batch_size=32,
+        bce_weight=0.2,
 
-        ENCODER='timm-efficientnet-b0',
+        ENCODER=None,
         # 'resnet101',  # 'efficientnet-b2',  # 'timm-efficientnet-b8',  # 'efficientnet-b0'
         ENCODER_WEIGHTS='imagenet',
         ACTIVATION='sigmoid',  # could be None for logits or 'softmax2d' for multiclass segmentation
