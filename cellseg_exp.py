@@ -2,6 +2,10 @@ import os
 import sys
 import inspect
 
+import copy
+from types import SimpleNamespace
+import json
+
 import gc
 from pathlib import Path
 import importlib
@@ -172,7 +176,17 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
         verbose=True,
     )
 
-    # TRAIN
+    # TRAIN   
+
+    with open(log_dir / 'params.json', 'w') as f:
+        p_dump = copy.copy(p)
+        p_dump.dataset_dir = str(p_dump.dataset_dir)
+        json.dump(vars(p_dump), f, indent=4)
+        
+    # with open(log_dir / 'params.json', 'r') as f:
+    #     loaded_params = SimpleNamespace(**json.load(f))
+    #     loaded_params.dataset_dir = Path(loaded_params.dataset_dir)
+    
     if run_clear_ml:
         task = Task.init(project_name="CellSeg4",
                          task_name=str(log_dir),
