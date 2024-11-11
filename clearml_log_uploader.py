@@ -2,14 +2,19 @@ import re
 from collections import defaultdict
 from pathlib import PosixPath, Path
 from pprint import pprint
+from tqdm import tqdm
 
 from clearml import Task
 from torch.utils.tensorboard import SummaryWriter
 
 
 def parse_log_file(log_file_path):
-    with open(log_file_path, 'r') as file:
-        lines = file.readlines()
+    lines = list()
+    with open(log_file_path, 'r', newline='\n') as file:
+        for line in tqdm(file, desc='read_lines'):
+            lines.append(line[:-1].split('\r')[-1])
+    # with open(log_file_path, 'r') as file:
+    #     lines = file.readlines()
 
     # Initialize variables
     params = {}
@@ -27,7 +32,7 @@ def parse_log_file(log_file_path):
     inside_params = False
 
     # Parsing the file
-    for line in lines:
+    for line in tqdm(lines, desc='process lines'):
         # Collect lines for parameters
         if line.startswith("{'"):
             inside_params = True
@@ -77,7 +82,7 @@ def parse_log_file(log_file_path):
 
 
 # Usage example
-log_file_path = Path("out_CASCADE/cellseg.45339.log_short")
+log_file_path = Path("out_CASCADE/cellseg.45339.log")
 run_clear_ml = True
 project_name = "CellSeg4"
 log_dir = f'{str(log_file_path.stem)}_from_logs'
