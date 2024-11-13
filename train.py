@@ -16,7 +16,7 @@ if __name__ == '__main__':
     draw = True
     test = False
 
-    multiclass = True
+    multiclass = False
     add_shadow_to_img = True
     square_a = 256
     border = 10
@@ -24,6 +24,33 @@ if __name__ == '__main__':
 
     out_root = Path('out')
     dataset_root = Path('/storage0/pia/python/cellseg/')
+
+    dataset_dir = dataset_root / Path('datasets/Cells_2.0_for_Ivan/masked_MSC')
+    dir01 = dataset_dir / 'pics 2024-20240807T031703Z-001' / 'pics 2024'
+    dir02 = dataset_dir / 'pics 2024-20240807T031703Z-002' / 'pics 2024'
+    lf_dir = dir01 / 'LF1'
+    wj_msc_dir = dir02 / 'WJ-MSC-P57'
+
+    resize_coef = 1
+
+    # dataset_dir = lf_dir
+    # exp_class_dict = {'+2024-05-05-LF1-p6-sl2': 6,
+    #                   '+2024-05-06-LF1p9-sl2': 6,
+    #                   '+2024-05-06-LF1-p12': 12,
+    #                   '+2024-05-07-LF1p15': 12,
+    #                   '+2024-05-08-LF1p18sl2': 18,
+    #                   '+2024-05-31-LF1-p22': 18}
+    channels= ['r', 'g', 'b']
+    
+    dataset_dir = wj_msc_dir
+    exp_class_dict = {'2024-05-01-wj-MSC-P57p3': 3,
+                      '2024-05-03-wj-MSC-P57p5': 3,
+                      '2024-05-01-wj-MSC-P57p7': 7,
+                      '2024-05-04-wj-MSC-P57p9-sl2': 7,
+                      '2024-05-02-wj-MSC-P57p11': 11,
+                      '2024-05-03-wj-MSC-P57p13': 11,
+                      '2024-05-02-wj-MSC-P57p15sl2': 11}
+    channels= ['b']
 
     if test:
         run_clear_ml = False
@@ -35,36 +62,16 @@ if __name__ == '__main__':
         max_epochs = 1
     else:
         run_clear_ml = False
-        out_dir = out_root / 'LF1'
+        out_dir = out_root / dataset_dir.stem
         shuffle = True
         ratio_train = 0.8
         ratio_val = 0.2
         images_num = None
-        max_epochs = 50
-
-    dataset_dir = dataset_root / Path('datasets/Cells_2.0_for_Ivan/masked_MSC')
-    dir01 = dataset_dir / 'pics 2024-20240807T031703Z-001' / 'pics 2024'
-    dir02 = dataset_dir / 'pics 2024-20240807T031703Z-002' / 'pics 2024'
-    lf_dir = dir01 / 'LF1'
-    resize_coef = 1
-
-    dataset_dir = lf_dir
-    # exp_class_dict = {'+2024-05-05-LF1-p6-sl2': 6,
-    #                   '+2024-05-06-LF1p9-sl2': 9,
-    #                   '+2024-05-06-LF1-p12': 12,
-    #                   '+2024-05-07-LF1p15': 15,
-    #                   '+2024-05-08-LF1p18sl2': 18,
-    #                   '+2024-05-31-LF1-p22': 22}
-    exp_class_dict = {'+2024-05-05-LF1-p6-sl2': 6,
-                      '+2024-05-06-LF1p9-sl2': 6,
-                      '+2024-05-06-LF1-p12': 12,
-                      '+2024-05-07-LF1p15': 12,
-                      '+2024-05-08-LF1p18sl2': 18,
-                      '+2024-05-31-LF1-p22': 18}
-
-    channels = 3
+        max_epochs = 80
+   
+    channels_num = len(channels)
     if add_shadow_to_img:
-        channels += 1  # shadow
+        channels_num += 1  # shadow
     classes_num = len(set(exp_class_dict.values())) if multiclass else 1
     classes_num += 1  # border
 
@@ -87,6 +94,7 @@ if __name__ == '__main__':
         border=border,
         classes_num=classes_num,
         channels=channels,
+        channels_num=channels_num,
         num_workers=4,
         batch_size=32,
         bce_weight=0.2,
@@ -99,7 +107,7 @@ if __name__ == '__main__':
 
         max_epochs=max_epochs,
         lr_first=1e-2,
-        lr_last=1e-5,
+        lr_last=1e-4,
         scheduler_step_every_batch=True,
     )
 
@@ -125,5 +133,7 @@ if __name__ == '__main__':
             pprint(vars(params))
 
             log_dir = Path(out_dir) / f'{params.model_name}_{params.ENCODER}_{get_str_timestamp()}'
+            if multiclass:
+                log_dir = log_dir.with_name('MC_' + log_dir.name)
             experiment(run_clear_ml=run_clear_ml, p=params, d=dataset_params, log_dir=log_dir, draw=draw)
             torch.cuda.empty_cache()

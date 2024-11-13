@@ -189,6 +189,7 @@ class CellDataset4(BaseDataset):
             squares=None,
             border=None,
             classes=None,
+            channels=['r', 'g', 'b'],
             augmentation=None,
             preprocessing=None,
             target_size=None,
@@ -202,8 +203,8 @@ class CellDataset4(BaseDataset):
 
         self.squares = squares
         self.border = border
-        self.channels = None
-
+        self.channels = channels
+        self.channels_num = None
         self.classes = classes
 
         self.augmentation = augmentation
@@ -228,13 +229,13 @@ class CellDataset4(BaseDataset):
             self.parallel_processing(max_workers=self.max_workers)  # запуск параллельной обработки
 
         if len(self.images) != 0:
-            self.channels = self.images[0].shape[-1]
+            self.channels_num = self.images[0].shape[-1]
             if self.add_shadow_to_img:
-                self.channels += 1
+                self.channels_num += 1
 
     def process_fp_data(self, fp_data):
         """Метод для обработки одного объекта данных."""
-        img = self.read_image(fp_data)
+        img = self.read_image(fp_data, channels=self.channels)
         mask = self.read_mask(fp_data) // 255
         assert img.shape[:-1] == mask.shape[:-1]
 
@@ -599,6 +600,7 @@ def prepare_data_from_params(params, shuffle=True, max_workers=8):
                         multiclass=params.multiclass,
                         add_shadow_to_img=params.add_shadow_to_img,
                         contour_thickness=params.contour_thickness,
+                        channels=params.channels,
                         shuffle=shuffle,
                         max_workers=max_workers)
 
@@ -615,6 +617,7 @@ def prepare_data(dataset_dir,
                  multiclass=False,
                  add_shadow_to_img=True,
                  contour_thickness=2,
+                 channels=['r', 'g', 'b'],
                  max_workers=8):
     all_fp_data = get_all_fp_data(dataset_dir, exp_class_dict)
     if shuffle:
@@ -665,6 +668,7 @@ def prepare_data(dataset_dir,
                             augmentation=aug,
                             preprocessing=preprocessing,
                             classes=classes,
+                            channels=channels,
                             target_size=target_size,
                             contour_thickness=contour_thickness,
                             max_workers=max_workers

@@ -80,14 +80,14 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
     # model = model_fn(
     #     encoder_name=p.ENCODER,
     #     encoder_weights=p.ENCODER_WEIGHTS,
-    #     in_channels=p.channels,
+    #     in_channels=p.channels_num,
     #     classes=p.classes_num,
     #     activation=p.ACTIVATION,
     # )
     model = create_model_with_separate_decoder_for_boundary(model_name=p.model_name,
                                                             encoder_name=p.ENCODER,
                                                             encoder_weights=p.ENCODER_WEIGHTS,
-                                                            in_channels=p.channels,
+                                                            in_channels=p.channels_num,
                                                             classes=p.classes_num - 1,
                                                             boundary_classes=1,
                                                             activation=p.ACTIVATION,
@@ -268,7 +268,7 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
         #     os.makedirs(os.path.join(out_dir, directory), exist_ok=True)
 
         w = h = 20
-        img_num = p.channels + 2
+        img_num = p.channels_num + 2
         figsize = (w * img_num, h)
 
         img_list = list()
@@ -329,13 +329,13 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
                     restored_pr_full[restored_pr[idx] == 1] = idx + 1
 
                 fig, ax = plt.subplots(1, img_num, figsize=figsize)
-                for c_idx in range(test_dataset.channels):
+                for c_idx in range(p.channels_num):
                     ax[c_idx].imshow(restored_img[c_idx], cmap='gray', vmin=0, vmax=1)
                     ax[c_idx].title.set_text(f'# {c_idx}')
-                ax[p.channels + 0].imshow(restored_gt_full, cmap='gray', vmin=0, vmax=class_num)
-                ax[p.channels + 0].title.set_text('gt_mask')
-                ax[p.channels + 1].imshow(restored_pr_full, cmap='gray', vmin=0, vmax=class_num)
-                ax[p.channels + 1].title.set_text('pr_mask')
+                ax[p.channels_num + 0].imshow(restored_gt_full, cmap='gray', vmin=0, vmax=class_num)
+                ax[p.channels_num + 0].title.set_text('gt_mask')
+                ax[p.channels_num + 1].imshow(restored_pr_full, cmap='gray', vmin=0, vmax=class_num)
+                ax[p.channels_num + 1].title.set_text('pr_mask')
 
                 fig.savefig((out_dir / 'full' / res_idx).with_suffix('.png'), bbox_inches='tight')
                 plt.close(fig)
