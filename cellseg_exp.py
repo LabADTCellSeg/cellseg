@@ -293,6 +293,14 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
                 image = x[img_idx].squeeze().cpu().numpy()
                 gt_mask = y[img_idx].squeeze().cpu().numpy().round()
                 pr_mask = pred_y[img_idx].squeeze().cpu().numpy().round()
+
+                if len(image.shape) == 2:
+                    image = image[np.newaxis,...]
+                if len(gt_mask.shape) == 2:
+                    gt_mask = gt_mask[np.newaxis,...]
+                if len(pr_mask.shape) == 2:
+                    pr_mask = pr_mask[np.newaxis,...]
+
                 img_list.append(image)
                 gt_list.append(gt_mask)
                 pr_list.append(pr_mask)
