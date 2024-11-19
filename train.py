@@ -15,12 +15,11 @@ torch.hub.set_dir(TORCH_HUB_DIR)
 if __name__ == '__main__':
     draw = True
     test = False
-
     multiclass = False
-    add_shadow_to_img = True
+    add_shadow_to_img = False
     square_a = 256
     border = 10
-    contour_thickness = 4
+    contour_thickness = 2
 
     out_root = Path('out')
     dataset_root = Path('/storage0/pia/python/cellseg/')
@@ -40,7 +39,7 @@ if __name__ == '__main__':
     #                   '+2024-05-07-LF1p15': 12,
     #                   '+2024-05-08-LF1p18sl2': 18,
     #                   '+2024-05-31-LF1-p22': 18}
-    channels= ['r', 'g', 'b']
+    # channels= ['r', 'g', 'b']
     
     dataset_dir = wj_msc_dir
     exp_class_dict = {'2024-05-01-wj-MSC-P57p3': 3,
@@ -67,7 +66,7 @@ if __name__ == '__main__':
         ratio_train = 0.8
         ratio_val = 0.2
         images_num = None
-        max_epochs = 80
+        max_epochs = 40
    
     channels_num = len(channels)
     if add_shadow_to_img:
@@ -96,8 +95,10 @@ if __name__ == '__main__':
         channels=channels,
         channels_num=channels_num,
         num_workers=4,
-        batch_size=32,
-        bce_weight=0.2,
+        batch_size=64,
+        bce_weight=0.0,
+        focal_alpha=0.5,
+        focal_gamma=1.5,
 
         ENCODER=None,
         # 'resnet101',  # 'efficientnet-b2',  # 'timm-efficientnet-b8',  # 'efficientnet-b0'
@@ -106,8 +107,8 @@ if __name__ == '__main__':
         DEVICE='cuda' if torch.cuda.is_available() else 'cpu',
 
         max_epochs=max_epochs,
-        lr_first=1e-2,
-        lr_last=1e-4,
+        lr_first=1e-3,
+        lr_last=1e-5,
         scheduler_step_every_batch=True,
     )
 
@@ -124,8 +125,8 @@ if __name__ == '__main__':
     # encoders = ['resnet34', 'resnet50', 'resnext50_32x4d', 'se_resnet50', 'resnet101', 'vgg19']
     # models = ['Unet', 'MAnet', 'FPN', 'DeepLabV3', 'DeepLabV3Plus']
     # models = ['DeepLabV3', 'DeepLabV3Plus']
-    encoders = ['timm-efficientnet-b8']
-    models = ['Unet']
+    encoders = ['timm-efficientnet-b0']
+    models = ['DeepLabV3Plus']
     for encoder in encoders:
         params.ENCODER = encoder
         for model_name in models:

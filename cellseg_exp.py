@@ -28,6 +28,10 @@ from clearml import Task
 
 from cellseg_utils import (
     BCEDiceLoss,
+    FocalLoss,
+    FocalLossMultiClass,
+    CombinedLoss,
+    WeightedBCEDiceLoss,
     unsplit_image,
     TrainEpochSchedulerStep
 )
@@ -76,22 +80,22 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
                     param.requires_grad = False
 
     # # create segmentation model with pretrained encoder
-    # model_fn = getattr(importlib.import_module('segmentation_models_pytorch'), p.model_name)
-    # model = model_fn(
-    #     encoder_name=p.ENCODER,
-    #     encoder_weights=p.ENCODER_WEIGHTS,
-    #     in_channels=p.channels_num,
-    #     classes=p.classes_num,
-    #     activation=p.ACTIVATION,
-    # )
-    model = create_model_with_separate_decoder_for_boundary(model_name=p.model_name,
-                                                            encoder_name=p.ENCODER,
-                                                            encoder_weights=p.ENCODER_WEIGHTS,
-                                                            in_channels=p.channels_num,
-                                                            classes=p.classes_num - 1,
-                                                            boundary_classes=1,
-                                                            activation=p.ACTIVATION,
-                                                            )
+    model_fn = getattr(importlib.import_module('segmentation_models_pytorch'), p.model_name)
+    model = model_fn(
+        encoder_name=p.ENCODER,
+        encoder_weights=p.ENCODER_WEIGHTS,
+        in_channels=p.channels_num,
+        classes=p.classes_num,
+        activation=p.ACTIVATION,
+    )
+    # model = create_model_with_separate_decoder_for_boundary(model_name=p.model_name,
+    #                                                         encoder_name=p.ENCODER,
+    #                                                         encoder_weights=p.ENCODER_WEIGHTS,
+    #                                                         in_channels=p.channels_num,
+    #                                                         classes=p.classes_num - 1,
+    #                                                         boundary_classes=1,
+    #                                                         activation=p.ACTIVATION,
+    #                                                         )
 
     if p.model_load_fp is None:
         print('created new')
@@ -128,7 +132,10 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
     # loss = smp.losses.DiceLoss('multilabel')
     # loss.__name__ = 'dice'
 
-    loss = BCEDiceLoss(bce_weight=p.bce_weight)
+    # loss = BCEDiceLoss(bce_weight=p.bce_weight)
+    # loss = FocalLossMultiClass(alpha=p.focal_alpha, gamma=p.focal_gamma)
+    loss = CombinedLoss(bce_weight=p.bce_weight, alpha=p.focal_alpha, gamma=p.focal_gamma)
+    # loss = WeightedBCEDiceLoss(bce_weight=p.bce_weight, boundary_weight=0.999)
 
     iou = smp.utils.metrics.IoU(threshold=0.5)
     iou.__name__ = 'IoU'

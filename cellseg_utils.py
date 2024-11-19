@@ -417,11 +417,11 @@ def get_training_augmentation(target_size=None):
 
         A.RandomResizedCrop(height=target_size[1], width=target_size[0], scale=(0.75, 1.0), p=0.5),
 
-        # A.GaussNoise(p=0.2),
+        A.GaussNoise(p=0.2),
 
         A.OneOf(
             [
-                A.CLAHE(p=1),
+                # A.CLAHE(p=1),
                 A.RandomBrightnessContrast(p=1),
                 A.RandomGamma(p=1),
             ],
@@ -527,11 +527,11 @@ class WeightedBCEDiceLoss:
 
     def __call__(self, pred, target):
         # Рассчитываем BCE и Dice для каждого канала
-        bce_cells = self.bce_loss_calc(pred[:, 0, :, :], target[:, 0, :, :])
-        bce_boundaries = self.bce_loss_calc(pred[:, 1, :, :], target[:, 1, :, :])
+        bce_cells = self.bce_loss_calc(pred[:, :-1, :, :], target[:, :-1, :, :])
+        bce_boundaries = self.bce_loss_calc(pred[:, -1, :, :], target[:, -1, :, :])
 
-        dice_cells = self.dice_loss_calc(torch.sigmoid(pred[:, 0, :, :]), target[:, 0, :, :])
-        dice_boundaries = self.dice_loss_calc(torch.sigmoid(pred[:, 1, :, :]), target[:, 1, :, :])
+        dice_cells = self.dice_loss_calc(torch.sigmoid(pred[:, :-1, :, :]), target[:, :-1, :, :])
+        dice_boundaries = self.dice_loss_calc(torch.sigmoid(pred[:, -1, :, :]), target[:, -1, :, :])
 
         # Применяем разные веса для границ
         bce_loss = (bce_cells + self.boundary_weight * bce_boundaries) / (1 + self.boundary_weight)
@@ -549,6 +549,74 @@ class WeightedBCEDiceLoss:
         self.device = device
 
 
+class FocalLoss(torch.nn.Module):
+    __name__ = 'focal'
+
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def __call__(self, pred, targets):
+        # Применение сигмоиды, если это не логиты
+        BCE_loss = torch.nn.BCEWithLogitsLoss(reduction='none')(pred, targets)
+        pt = torch.exp(-BCE_loss)  # pt - вероятность предсказания
+        F_loss = self.alpha * (1 - pt) ** self.gamma * BCE_loss
+
+        if self.reduction == 'mean':
+            return F_loss.mean()
+        elif self.reduction == 'sum':
+            return F_loss.sum()
+        else:
+            return F_loss
+
+    def to(self, device):
+        self.device = device
+
+
+class FocalLossMultiClass(torch.nn.Module):
+    __name__ = 'focal'
+
+    def __init__(self, alpha=1, gamma=2, reduction='mean'):
+        super(FocalLossMultiClass, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def __call__(self, pred, targets):
+        # Cross Entropy Loss
+        CE_loss = torch.nn.CrossEntropyLoss(reduction='none')(pred, targets)
+        pt = torch.exp(-CE_loss)
+        F_loss = self.alpha * (1 - pt) ** self.gamma * CE_loss
+
+        if self.reduction == 'mean':
+            return F_loss.mean()
+        elif self.reduction == 'sum':
+            return F_loss.sum()
+        else:
+            return F_loss
+
+    def to(self, device):
+        self.device = device
+
+
+class CombinedLoss(torch.nn.Module):
+    __name__ = 'bce_dice_focal'
+
+    def __init__(self, bce_weight=0.5, alpha=0.5, gamma=2.0):
+        super(CombinedLoss, self).__init__()
+        self.focal_loss = FocalLossMultiClass(alpha=alpha, gamma=gamma)
+        self.dice_loss = BCEDiceLoss(bce_weight=bce_weight)
+
+    def __call__(self, inputs, targets):
+        focal = self.focal_loss(inputs, targets)
+        dice = self.dice_loss(inputs, targets)
+        return focal + dice
+
+    def to(self, device):
+        self.device = device
+      
 def parse_filename_nd2(filename):
     # Определяем шаблон для поиска
     pattern = r'^(.*?)_LF(\d+)-P(\d+)_(.*?)_(\d+)\.nd2$'
@@ -566,6 +634,7 @@ def parse_filename_nd2(filename):
         return group1, group2, group3, group4
     else:
         return None
+
 
 
 def get_classes_from_fps(fps, classes_groups=None):
