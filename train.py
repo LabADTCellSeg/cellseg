@@ -8,9 +8,17 @@ import torch
 from cellseg_exp import experiment
 from cellseg_utils import prepare_data_from_params, get_str_timestamp
 
-TORCH_HUB_DIR = '/storage0/pia/python/hub/'
+CASCADE = False
 
-torch.hub.set_dir(TORCH_HUB_DIR)
+if CASCADE:
+    server_name = 'CASCADE'
+    TORCH_HUB_DIR = '/storage0/pia/python/hub/'
+    torch.hub.set_dir(TORCH_HUB_DIR)
+    root_dir = '/storage0/pia/python/cellseg/'
+else:
+    server_name = 'seth'
+    root_dir = '.'
+
 
 if __name__ == '__main__':
     draw = True
@@ -22,9 +30,9 @@ if __name__ == '__main__':
     contour_thickness = 2
 
     out_root = Path('out')
-    dataset_root = Path('/storage0/pia/python/cellseg/')
+    root_dir = Path(root_dir)
 
-    dataset_dir = dataset_root / Path('datasets/Cells_2.0_for_Ivan/masked_MSC')
+    dataset_dir = root_dir / Path('datasets/Cells_2.0_for_Ivan/masked_MSC')
     dir01 = dataset_dir / 'pics 2024-20240807T031703Z-001' / 'pics 2024'
     dir02 = dataset_dir / 'pics 2024-20240807T031703Z-002' / 'pics 2024'
     lf_dir = dir01 / 'LF1'
