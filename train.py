@@ -8,13 +8,17 @@ import torch
 from cellseg_exp import experiment
 from cellseg_utils import prepare_data_from_params, get_str_timestamp
 
+
 CASCADE = False
+run_clear_ml = True
+test = False
 
 if CASCADE:
     server_name = 'CASCADE'
     TORCH_HUB_DIR = '/storage0/pia/python/hub/'
     torch.hub.set_dir(TORCH_HUB_DIR)
     root_dir = '/storage0/pia/python/cellseg/'
+    run_clear_ml = False
 else:
     server_name = 'seth'
     root_dir = '.'
@@ -22,8 +26,7 @@ else:
 
 if __name__ == '__main__':
     draw = True
-    test = False
-    multiclass = False
+    multiclass = True
     add_shadow_to_img = False
     square_a = 256
     border = 10
@@ -63,18 +66,13 @@ if __name__ == '__main__':
         run_clear_ml = False
         out_dir = out_root / 'test'
         shuffle = True
-        ratio_train = 0.8
-        ratio_val = 0.2
         images_num = 5
         max_epochs = 1
     else:
-        run_clear_ml = False
         out_dir = out_root / dataset_dir.stem
         shuffle = True
-        ratio_train = 0.8
-        ratio_val = 0.2
         images_num = None
-        max_epochs = 40
+        max_epochs = 50
    
     channels_num = len(channels)
     if add_shadow_to_img:
@@ -95,15 +93,15 @@ if __name__ == '__main__':
         multiclass=multiclass,
         add_shadow_to_img=add_shadow_to_img,
         contour_thickness=contour_thickness,
-        ratio_train=ratio_train,
-        ratio_val=ratio_val,
+        ratio_train=0.8,
+        ratio_val=0.2,
         square_a=square_a,
         border=border,
         classes_num=classes_num,
         channels=channels,
         channels_num=channels_num,
         num_workers=4,
-        batch_size=64,
+        batch_size=4,
         bce_weight=0.0,
         focal_alpha=0.5,
         focal_gamma=1.5,

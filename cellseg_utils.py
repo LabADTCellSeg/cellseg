@@ -781,6 +781,11 @@ class TrainEpochSchedulerStep(smp.utils.train.Epoch):
             self.scheduler.step()
         return loss, prediction
 
+    def _format_logs(self, logs):
+        str_logs = ["{} - {:7.4}".format(k, v) for k, v in logs.items()]
+        s = ", ".join(str_logs)
+        return s
+    
     def run(self, dataloader):
 
         self.on_epoch_start()
