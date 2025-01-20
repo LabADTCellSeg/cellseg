@@ -41,7 +41,7 @@ def calc_ps(passage_mask, contour):
     return p1, p2, p3
 
 
-def get_cell_statistics(matrix, exp, p, pgr, marker, n, passage_mask=None):
+def get_cell_statistics(matrix, exp, exp_class_dir, p, pgr, marker, n, passage_mask=None):
     # Convert matrix to uint8 for cv2 operations
     matrix_uint8 = (matrix * 255).astype(np.uint8)
 
@@ -111,18 +111,13 @@ def get_cell_statistics(matrix, exp, p, pgr, marker, n, passage_mask=None):
                     p2_list.append(p2)
                     p3_list.append(p3)
 
-    exp_list = [exp] * len(centers)
-    p_list = [p] * len(centers)
-    pgr_list = [pgr] * len(centers)
-    marker_list = [marker] * len(centers)
-    n_list = [n] * len(centers)
-
     res_dict = {
-        'Exp': exp_list,
-        'P': p_list,
-        'PGr': pgr_list,
-        'Marker': marker_list,
-        'N': n_list,
+        'Exp': [exp] * len(centers),
+        'Exp_dir': [exp_class_dir] * len(centers),
+        'P': [p] * len(centers),
+        'PGr': [pgr] * len(centers),
+        'Marker': [marker] * len(centers),
+        'N': [n] * len(centers),
         'Center': centers,
         'Area': areas,
         'Roundness': roundnesses,
