@@ -1,6 +1,4 @@
 import os
-import sys
-import inspect
 
 import copy
 from types import SimpleNamespace
@@ -27,21 +25,21 @@ from tqdm import tqdm
 from clearml import Task
 
 from cellseg_utils import (
-    BCEDiceLoss,
-    FocalLoss,
-    FocalLossMultiClass,
+    # BCEDiceLoss,
+    # FocalLoss,
+    # FocalLossMultiClass,
     CombinedLoss,
-    WeightedBCEDiceLoss,
+    # WeightedBCEDiceLoss,
     unsplit_image,
     TrainEpochSchedulerStep
 )
 
-import cellseg_models
-from cellseg_models import (
-    CustomUNetWithSeparateDecoderForBoundary,
-    create_model_with_separate_decoder_for_boundary
-)
-from cellseg_utils import prepare_data_from_params, get_str_timestamp
+# import cellseg_models
+# from cellseg_models import (
+#     CustomUNetWithSeparateDecoderForBoundary,
+#     create_model_with_separate_decoder_for_boundary
+# )
+from cellseg_utils import prepare_data_from_params
 
 import matplotlib
 from PIL import Image
@@ -177,6 +175,14 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
                     p.max_epochs) if p.max_epochs != 0 else 0
         scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer, step_size=1, gamma=gamma, last_epoch=-1)
+
+    def _format_logs(self, logs):
+        str_logs = ["{} - {:.4f}".format(k, v) for k, v in logs.items()]
+        s = ", ".join(str_logs)
+        return s
+
+    smp.utils.train.Epoch._format_logs = _format_logs
+
     train_epoch = TrainEpochSchedulerStep(
         model,
         loss=loss,
@@ -284,7 +290,7 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
     print('DONE!')
 
 
-def test_exp(exp_dir, out_dir, dataset_dir, draw=True):
+def test_exp(exp_dir, out_dir, dataset_dir, draw=True, use_all=False, batch_size=None):
     exp_dir = Path(exp_dir)
     out_dir = Path(out_dir)
 
@@ -293,20 +299,26 @@ def test_exp(exp_dir, out_dir, dataset_dir, draw=True):
         p = SimpleNamespace(**cfg)
         p.dataset_dir = Path(dataset_dir)
 
-    fp_data_list, aug_list, dataset_fn = prepare_data_from_params(p,
-                                                                  shuffle=True,
-                                                                  max_workers=8)
+    if use_all:
+        p.ratio_train = 0.0
+        p.ratio_val = 0.0
+        p.images_num = None
+    fp_data_list, aug_list, dataset_fn, dataset_test_fn = prepare_data_from_params(p,
+                                                                                   shuffle=True,
+                                                                                   max_workers=1)
 
     d = SimpleNamespace(fp_data_list=fp_data_list,
                         aug_list=aug_list,
-                        dataset_fn=dataset_fn)
+                        dataset_fn=dataset_test_fn)
 
-    test_dataset = d.dataset_fn(d.fp_data_list.valid, d.aug_list.test)
+    if batch_size:
+        p.batch_size = batch_size
+    test_dataset = d.dataset_fn(d.fp_data_list.test, d.aug_list.test)
     test_loader = DataLoader(test_dataset, batch_size=p.batch_size,
-                             shuffle=False, num_workers=p.num_workers, drop_last=True)
+                             shuffle=False, num_workers=1, drop_last=True)
 
-    print(test_dataset[0][0].shape)
-    print(test_dataset[0][1].shape)
+    # print(test_dataset[0][0].shape)
+    # print(test_dataset[0][1].shape)
 
     # Freeze layers by name
     def freeze_layers_by_name(model, layer_names):
@@ -380,17 +392,24 @@ def test_exp(exp_dir, out_dir, dataset_dir, draw=True):
         c_iou.__name__ = f'IoU_{c}'
         metrics.append(c_iou)
 
-    test_epoch = smp.utils.train.ValidEpoch(
-        model=model,
-        loss=loss,
-        metrics=metrics,
-        device=p.DEVICE,
-    )
+    def _format_logs(self, logs):
+        str_logs = ["{} - {:.4f}".format(k, v) for k, v in logs.items()]
+        s = ", ".join(str_logs)
+        return s
 
-    test_logs = test_epoch.run(test_loader)
-    for k, v in test_logs.items():
-        print(f"{' '.join(k.split('_')).title()}: {v:.2f}")
+    # smp.utils.train.Epoch._format_logs = _format_logs
+    # test_epoch = smp.utils.train.ValidEpoch(
+    #     model=model,
+    #     loss=loss,
+    #     metrics=metrics,
+    #     device=p.DEVICE,
+    # )
 
+    # test_logs = test_epoch.run(test_loader)
+    # for k, v in test_logs.items():
+    #     print(f"{' '.join(k.split('_')).title()}: {v:.2f}")
+
+    model = model.to(p.DEVICE)
     if draw:
         iou_metric_list = draw_and_save_results(
             out_dir, test_dataset, test_loader, model, p)
@@ -426,10 +445,10 @@ def draw_and_save_results(out_dir, test_dataset, test_loader, model, p):
     squares = test_dataset.squares
     border = test_dataset.border
 
-    for batch_idx, (x, y) in tqdm(enumerate(test_loader)):
-
+    pbar = tqdm(total=int(len(test_loader.dataset) / len(squares)))
+    for batch_idx, (x, y) in enumerate(test_loader):
         pred_y = model.predict(x.to(p.DEVICE))
-
+        test_loader.dataset.__getitem__(batch_idx * p.batch_size)
         # info = None
         for img_idx in range(y.shape[0]):
             n = batch_idx * p.batch_size + img_idx
@@ -563,5 +582,9 @@ def draw_and_save_results(out_dir, test_dataset, test_loader, model, p):
             gt_list = gt_list[len(squares):]
             pr_list = pr_list[len(squares):]
             info_list = info_list[len(squares):]
+            pbar.update(1)
 
+            # Trigger garbage collection manually
+            gc.collect()
+    pbar.close()
     return iou_metric_list

@@ -395,6 +395,651 @@ class CellDataset4(BaseDataset):
         return len(self.images)
 
 
+class CellDataset4Test1(BaseDataset):
+    def __init__(
+            self,
+            all_fp_data,
+            full_size=None,
+            add_shadow_to_img=False,
+            squares=None,
+            border=None,
+            classes=None,
+            channels=['r', 'g', 'b'],
+            augmentation=None,
+            preprocessing=None,
+            target_size=None,
+            contour_thickness=2
+    ):
+        """
+        Параметры аналогичны оригинальному датасету, но здесь данные не предвычисляются.
+        Построение mapping-а по индексам позволяет динамически загружать нужный квадрат.
+        """
+        self.all_fp_data = all_fp_data
+        self.full_size = full_size
+        self.add_shadow_to_img = add_shadow_to_img
+        self.squares = squares
+        self.border = border if border is not None else 0
+        self.classes = classes
+        self.channels = channels
+        self.augmentation = augmentation
+        self.preprocessing = preprocessing
+        self.target_size = target_size
+        self.contour_thickness = contour_thickness
+
+        # Построим отображение: каждому глобальному индексу датасета соответствует пара:
+        # (индекс fp_data, индекс квадрата внутри изображения).
+        self.mapping = []
+        for fp_idx, fp in enumerate(self.all_fp_data):
+            if self.full_size is not None and self.squares is not None:
+                # Если производится разбиение на квадраты, добавляем столько записей,
+                # сколько квадратов задано в списке squares.
+                for sq_idx, _ in enumerate(self.squares):
+                    self.mapping.append((fp_idx, sq_idx))
+            else:
+                # Если разбиение не требуется – одна запись на изображение.
+                self.mapping.append((fp_idx, None))
+
+        # Для ускорения последовательного обхода: кэш последнего загруженного файла.
+        self._cached_fp_index = None
+        self._cached_data = None  # Будет содержать кортеж (images, masks, shadows, info)
+
+    def __len__(self):
+        return len(self.mapping)
+
+    def __getitem__(self, index):
+        """
+        При запросе элемента определяется, к какому файлу и квадрату он относится.
+        Если нужный файл уже кэширован – используется кэш, иначе происходит загрузка.
+        После извлечения последнего квадрата файла кэш очищается, освобождая память.
+        """
+        fp_idx, square_idx = self.mapping[index]
+
+        # Если кэширован именно нужный файл, используем данные из кэша.
+        if self._cached_fp_index == fp_idx:
+            images, masks, shadows, info = self._cached_data
+        else:
+            fp_data = self.all_fp_data[fp_idx]
+            images, masks, shadows, info = self.process_fp_data(fp_data)
+            self._cached_fp_index = fp_idx
+            self._cached_data = (images, masks, shadows, info)
+
+        # Выбираем нужный квадрат или всё изображение, если разбиение не производится.
+        if square_idx is not None:
+            img = images[square_idx]
+            mask = masks[square_idx]
+            shadow = shadows[square_idx]
+        else:
+            img = images[0]
+            mask = masks[0]
+            shadow = shadows[0]
+
+        # Применяем аугментацию/препроцессинг, если они заданы
+        img_aug, mask_aug = self.aug(img, mask, shadow=shadow)
+        result = (img_aug.transpose(2, 0, 1).astype(np.float32),
+                  mask_aug.transpose(2, 0, 1).astype(np.float32))
+
+        # Механизм освобождения памяти: если текущий квадрат – последний для данного файла,
+        # либо это последний элемент всего датасета, очищаем кэш.
+        if index == len(self.mapping) - 1 or self.mapping[index + 1][0] != fp_idx:
+            self._cached_fp_index = None
+            self._cached_data = None
+
+        return result
+
+    def process_fp_data(self, fp_data):
+        """
+        Загружает изображение и маску, выполняет предварительную обработку
+        и, при необходимости, разбивает изображение на квадраты.
+        """
+        img = self.read_image(fp_data, channels=self.channels)
+        mask = self.read_mask(fp_data) // 255
+        assert img.shape[:-1] == mask.shape[:-1]
+
+        if self.classes is not None:
+            mask = self._prepare_mask(mask, cls_num=len(self.classes),
+                                      cls=self.classes.index(fp_data['cls']),
+                                      contour_thickness=self.contour_thickness)
+        else:
+            mask = self._prepare_mask(mask, cls_num=1, cls=0,
+                                      contour_thickness=self.contour_thickness)
+        shadow = self.read_shadow(fp_data)[..., 0:1] if self.add_shadow_to_img else None
+
+        result_images, result_masks, result_shadows, result_info = [], [], [], []
+
+        if all(v is not None for v in [self.full_size, self.squares, self.border]):
+            # Разбиваем изображение и маску на квадраты.
+            _, img_sq_list = split_image(img, self.full_size, self.squares, self.border)
+            _, mask_sq_list = split_image(mask, self.full_size, self.squares, self.border)
+            if self.add_shadow_to_img:
+                _, shadow_sq_list = split_image(shadow, self.full_size, self.squares, self.border)
+            else:
+                shadow_sq_list = [None] * len(img_sq_list)
+
+            for img_sq, msk_sq, shd_sq, sq in zip(img_sq_list, mask_sq_list, shadow_sq_list, self.squares):
+                result_images.append(img_sq)
+                result_masks.append(msk_sq.astype(np.bool_))
+                result_shadows.append(shd_sq)
+                squares_info = dict(sq=sq)
+                squares_info.update(fp_data)
+                result_info.append(squares_info)
+        else:
+            # Если не задано разбиение на квадраты, возвращается всё изображение.
+            result_images.append(img)
+            result_masks.append(mask.astype(np.bool_))
+            result_shadows.append(shadow)
+            result_info.append(fp_data)
+
+        return result_images, result_masks, result_shadows, result_info
+
+    @staticmethod
+    def read_image(fp_data, channels=None, convert=None):
+        """
+        Считывание изображения по указанным каналам.
+        """
+        if channels is None:
+            channels = ['r', 'g', 'b']
+
+        c_stack = []
+        for c_idx, c in enumerate(channels):
+            c_img = Image.open(fp_data[f'{c}_fp'])
+            if convert:
+                c_img = np.asarray(c_img.convert(convert))
+            else:
+                # Если не требуется конвертация, извлекаем канал по индексу.
+                c_img = np.asarray(c_img)[..., c_idx]
+            c_stack.append(c_img)
+        return np.stack(c_stack, axis=-1)
+
+    @staticmethod
+    def read_mask(fp_data):
+        return CellDataset4Test.read_image(fp_data, channels=['mask'])
+
+    @staticmethod
+    def read_shadow(fp_data):
+        return CellDataset4Test.read_image(fp_data, channels=['p'], convert='L')
+
+    @staticmethod
+    def _prepare_mask(mask, cls_num=1, cls=0, contour_thickness=2):
+        """
+        Подготавливает маску: находит контуры и создаёт дополнительный канал для контура.
+        """
+        mask_contour = mask.copy()
+        contours, _ = cv2.findContours(mask_contour,
+                                       cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        _ = cv2.drawContours(mask_contour, contours, contourIdx=-1,
+                             color=[2], thickness=contour_thickness)
+        mask_prepared = np.zeros((mask.shape[0], mask.shape[1], cls_num + 1),
+                                 dtype=mask.dtype)
+        mask_prepared[..., cls:cls + 1][mask_contour == 1] = 1
+        mask_prepared[..., cls_num:cls_num + 1][mask_contour == 2] = 1
+        return mask_prepared
+
+    def aug(self, img, mask, shadow=False):
+        """
+        Применяет аугментацию и/или препроцессинг, если они заданы.
+        Если shadow передан, добавляет его как дополнительный канал.
+        """
+        if self.augmentation or self.preprocessing:
+            mask = mask.astype(np.uint8)
+            if shadow is None:
+                if self.augmentation:
+                    sample = self.augmentation(image=img, mask=mask)
+                    img, mask = sample['image'], sample['mask']
+                if self.preprocessing:
+                    sample = self.preprocessing(image=img, mask=mask)
+                    img, mask = sample['image'], sample['mask']
+            else:
+                if self.augmentation:
+                    sample = self.augmentation(image=img, mask=mask, shadow=shadow)
+                    img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
+                if self.preprocessing:
+                    sample = self.preprocessing(image=img, mask=mask, shadow=shadow)
+                    img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
+                # Добавляем канал тени (при условии, что shadow имеет 1 канал)
+                img = np.dstack([img, shadow[..., 0]])
+            return img / 255, mask
+        else:
+            return img / 255, mask
+
+
+class CellDataset4Test2(BaseDataset):
+    def __init__(
+            self,
+            all_fp_data,
+            full_size=None,
+            add_shadow_to_img=False,
+            squares=None,
+            border=None,
+            classes=None,
+            channels=['r', 'g', 'b'],
+            augmentation=None,
+            preprocessing=None,
+            target_size=None,
+            contour_thickness=2
+    ):
+        """
+        Параметры аналогичны оригинальному датасету, но здесь данные не предвычисляются.
+        Построение mapping-а по индексам позволяет динамически загружать нужный квадрат.
+        Реализован кэш с поддержкой нескольких файлов одновременно и механикой освобождения памяти,
+        когда все квадраты файла запрошены.
+        """
+        self.all_fp_data = all_fp_data
+        self.full_size = full_size
+        self.add_shadow_to_img = add_shadow_to_img
+        self.squares = squares
+        self.border = border if border is not None else 0
+        self.classes = classes
+        self.channels = channels
+        self.augmentation = augmentation
+        self.preprocessing = preprocessing
+        self.target_size = target_size
+        self.contour_thickness = contour_thickness
+
+        # Построим отображение: каждому глобальному индексу датасета соответствует пара:
+        # (индекс fp_data, индекс квадрата внутри изображения).
+        self.mapping = []
+        # Также для каждого fp_data узнаем, сколько квадратиков должно быть запрошено.
+        self.file_total_counts = {}
+        for fp_idx, fp in enumerate(self.all_fp_data):
+            if self.full_size is not None and self.squares is not None:
+                num_sq = len(self.squares)
+                for sq_idx in range(num_sq):
+                    self.mapping.append((fp_idx, sq_idx))
+                self.file_total_counts[fp_idx] = num_sq
+            else:
+                self.mapping.append((fp_idx, None))
+                self.file_total_counts[fp_idx] = 1
+
+        # Используем словарь для кэширования, чтобы поддерживать сразу несколько загруженных fp.
+        self._cache = {}         # ключ: fp_index, значение: (images, masks, shadows, info)
+        self._cache_usage = {}   # ключ: fp_index, значение: число уже выданных квадратов
+
+    def __len__(self):
+        return len(self.mapping)
+
+    def __getitem__(self, index):
+        """
+        По запросу элемента определяется, к какому файлу и какому квадрату он относится.
+        Если данные для нужного файла уже в кэше, используется кэш; иначе производится загрузка.
+        После возвращения элемента обновляется счётчик использования для соответствующего файла,
+        и если все квадраты этого файла выданы, данные удаляются из кэша.
+        """
+        fp_idx, square_idx = self.mapping[index]
+
+        # Загружаем данные из кэша, если они уже есть для данного fp_idx.
+        if fp_idx in self._cache:
+            images, masks, shadows, info = self._cache[fp_idx]
+        else:
+            fp_data = self.all_fp_data[fp_idx]
+            images, masks, shadows, info = self.process_fp_data(fp_data)
+            self._cache[fp_idx] = (images, masks, shadows, info)
+            self._cache_usage[fp_idx] = 0
+
+        # Выбираем нужный квадрат (если разбиение применяется) или всё изображение.
+        if square_idx is not None:
+            img = images[square_idx]
+            mask = masks[square_idx]
+            shadow = shadows[square_idx]
+        else:
+            img = images[0]
+            mask = masks[0]
+            shadow = shadows[0]
+
+        # Применяем аугментацию/препроцессинг, если они заданы
+        img_aug, mask_aug = self.aug(img, mask, shadow=shadow)
+        result = (img_aug.transpose(2, 0, 1).astype(np.float32),
+                  mask_aug.transpose(2, 0, 1).astype(np.float32))
+
+        # Обновляем счетчик использования для данного файла
+        self._cache_usage[fp_idx] += 1
+        # Если запрошено все квадраты из этого файла, освобождаем кэш
+        if self._cache_usage[fp_idx] >= self.file_total_counts[fp_idx]:
+            del self._cache[fp_idx]
+            del self._cache_usage[fp_idx]
+
+        return result
+
+    def process_fp_data(self, fp_data):
+        """
+        Загружает изображение и маску, выполняет предварительную обработку,
+        а при необходимости – разбивает на квадраты.
+        """
+        img = self.read_image(fp_data, channels=self.channels)
+        mask = self.read_mask(fp_data) // 255
+        assert img.shape[:-1] == mask.shape[:-1]
+
+        if self.classes is not None:
+            mask = self._prepare_mask(mask, cls_num=len(self.classes), cls=self.classes.index(fp_data['cls']),
+                                      contour_thickness=self.contour_thickness)
+        else:
+            mask = self._prepare_mask(mask, cls_num=1, cls=0, contour_thickness=self.contour_thickness)
+        shadow = self.read_shadow(fp_data)[..., 0:1] if self.add_shadow_to_img else None
+
+        result_images, result_masks, result_shadows, result_info = [], [], [], []
+
+        if all(v is not None for v in [self.full_size, self.squares, self.border]):
+            # Разбиваем изображение и маску на квадраты.
+            _, img_sq_list = split_image(img, self.full_size, self.squares, self.border)
+            _, mask_sq_list = split_image(mask, self.full_size, self.squares, self.border)
+            if self.add_shadow_to_img:
+                _, shadow_sq_list = split_image(shadow, self.full_size, self.squares, self.border)
+            else:
+                shadow_sq_list = [None] * len(img_sq_list)
+
+            for img_sq, msk_sq, shd_sq, sq in zip(img_sq_list, mask_sq_list, shadow_sq_list, self.squares):
+                result_images.append(img_sq)
+                result_masks.append(msk_sq.astype(np.bool_))
+                result_shadows.append(shd_sq)
+                squares_info = dict(sq=sq)
+                squares_info.update(fp_data)
+                result_info.append(squares_info)
+        else:
+            result_images.append(img)
+            result_masks.append(mask.astype(np.bool_))
+            result_shadows.append(shadow)
+            result_info.append(fp_data)
+
+        return result_images, result_masks, result_shadows, result_info
+
+    @staticmethod
+    def read_image(fp_data, channels=None, convert=None):
+        """
+        Считывание изображения по указанным каналам.
+        """
+        if channels is None:
+            channels = ['r', 'g', 'b']
+
+        c_stack = []
+        for c_idx, c in enumerate(channels):
+            c_img = Image.open(fp_data[f'{c}_fp'])
+            if convert:
+                c_img = np.asarray(c_img.convert(convert))
+            else:
+                c_img = np.asarray(c_img)[..., c_idx]
+            c_stack.append(c_img)
+        return np.stack(c_stack, axis=-1)
+
+    @staticmethod
+    def read_mask(fp_data):
+        return CellDataset4Test.read_image(fp_data, channels=['mask'])
+
+    @staticmethod
+    def read_shadow(fp_data):
+        return CellDataset4Test.read_image(fp_data, channels=['p'], convert='L')
+
+    @staticmethod
+    def _prepare_mask(mask, cls_num=1, cls=0, contour_thickness=2):
+        """
+        Подготавливает маску: выделяет контуры и создаёт дополнительный канал для контура.
+        """
+        mask_contour = mask.copy()
+        contours, _ = cv2.findContours(mask_contour,
+                                       cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        _ = cv2.drawContours(mask_contour, contours, contourIdx=-1,
+                             color=[2], thickness=contour_thickness)
+        mask_prepared = np.zeros((mask.shape[0], mask.shape[1], cls_num + 1),
+                                 dtype=mask.dtype)
+        mask_prepared[..., cls:cls + 1][mask_contour == 1] = 1
+        mask_prepared[..., cls_num:cls_num + 1][mask_contour == 2] = 1
+        return mask_prepared
+
+    def aug(self, img, mask, shadow=False):
+        """
+        Применяет аугментацию и/или препроцессинг, если они заданы.
+        Если передан shadow, добавляет его как дополнительный канал.
+        """
+        if self.augmentation or self.preprocessing:
+            mask = mask.astype(np.uint8)
+            if shadow is None:
+                if self.augmentation:
+                    sample = self.augmentation(image=img, mask=mask)
+                    img, mask = sample['image'], sample['mask']
+                if self.preprocessing:
+                    sample = self.preprocessing(image=img, mask=mask)
+                    img, mask = sample['image'], sample['mask']
+            else:
+                if self.augmentation:
+                    sample = self.augmentation(image=img, mask=mask, shadow=shadow)
+                    img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
+                if self.preprocessing:
+                    sample = self.preprocessing(image=img, mask=mask, shadow=shadow)
+                    img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
+                # Добавление канала тени (если shadow имеет 1 канал)
+                img = np.dstack([img, shadow[..., 0]])
+            return img / 255, mask
+        else:
+            return img / 255, mask
+
+
+class CellDataset4Test(BaseDataset):
+    def __init__(
+            self,
+            all_fp_data,
+            full_size=None,
+            add_shadow_to_img=False,
+            squares=None,
+            border=None,
+            classes=None,
+            channels=['r', 'g', 'b'],
+            augmentation=None,
+            preprocessing=None,
+            target_size=None,
+            contour_thickness=2
+    ):
+        """
+        Датасет для тестирования, который динамически загружает и обрабатывает данные.
+        При использовании batch_size > 1 реализовано кэширование нескольких файлов с
+        освобождением памяти по файлу, когда все его квадраты запрошены.
+        Дополнительно сохраняется info для каждого элемента, чтобы его можно было использовать
+        при отрисовке результатов.
+        """
+        self.all_fp_data = all_fp_data
+        self.full_size = full_size
+        self.add_shadow_to_img = add_shadow_to_img
+        self.squares = squares
+        self.border = border if border is not None else 0
+        self.classes = classes
+        self.channels = channels
+        self.augmentation = augmentation
+        self.preprocessing = preprocessing
+        self.target_size = target_size
+        self.contour_thickness = contour_thickness
+
+        # Формируем mapping: для каждого глобального индекса записываем (fp_index, индекс квадрата)
+        self.mapping = []
+        for fp_idx, fp in enumerate(self.all_fp_data):
+            if self.full_size is not None and self.squares is not None:
+                for sq_idx in range(len(self.squares)):
+                    self.mapping.append((fp_idx, sq_idx))
+            else:
+                self.mapping.append((fp_idx, None))
+
+        # Создаем список для хранения info для каждого элемента.
+        self.info = [None] * len(self.mapping)
+
+        # Создаем словарь для быстрого доступа: для каждого fp_idx список индексов в mapping
+        self.mapping_indices = {}
+        for idx, (fp_idx, square_idx) in enumerate(self.mapping):
+            if fp_idx not in self.mapping_indices:
+                self.mapping_indices[fp_idx] = []
+            self.mapping_indices[fp_idx].append(idx)
+
+        # Словарь для кэширования данных файлов.
+        # Для каждого fp_index будем хранить: (images, masks, shadows, info, expected_count)
+        self._cache = {}
+        # Счетчик выданных элементов для каждого fp_index.
+        self._cache_usage = {}
+
+    def __len__(self):
+        return len(self.mapping)
+
+    def __getitem__(self, index):
+        """
+        По индексу возвращает картинку и маску, при этом:
+         - Если данные файла уже кэшированы, используются кэшированные данные.
+         - После выдачи требуемого числа квадратов для файла, кэш удаляется.
+         - Поле info сохраняется в self.info для использования в отрисовке.
+        """
+        fp_idx, square_idx = self.mapping[index]
+
+        # Если данные файла уже кэшированы — используем их.
+        if fp_idx in self._cache:
+            images, masks, shadows, infos, expected_count = self._cache[fp_idx]
+        else:
+            fp_data = self.all_fp_data[fp_idx]
+            images, masks, shadows, infos = self.process_fp_data(fp_data)
+            expected_count = len(images)  # реальное число полученных квадратов
+            self._cache[fp_idx] = (images, masks, shadows, infos, expected_count)
+            self._cache_usage[fp_idx] = 0
+
+            # Заполняем сразу все элементы self.info, соответствующие данному fp_idx.
+            for i in self.mapping_indices.get(fp_idx, []):
+                _, sq = self.mapping[i]
+                self.info[i] = infos[sq] if sq is not None else infos[0]
+
+        # Если используется разбиение на квадраты, выбираем нужный квадрат, иначе берём первый элемент.
+        if square_idx is not None:
+            img = images[square_idx]
+            mask = masks[square_idx]
+            shadow = shadows[square_idx]
+            info = infos[square_idx]
+        else:
+            img = images[0]
+            mask = masks[0]
+            shadow = shadows[0]
+            info = infos[0]
+
+        # Применяем аугментацию/препроцессинг, если заданы.
+        img_aug, mask_aug = self.aug(img, mask, shadow=shadow)
+        result = (img_aug.transpose(2, 0, 1).astype(np.float32),
+                  mask_aug.transpose(2, 0, 1).astype(np.float32))
+
+        # Можно обновить self.info для текущего индекса (если требуется перезапись)
+        self.info[index] = info
+
+        # Обновляем счетчик использования для данного файла.
+        self._cache_usage[fp_idx] += 1
+        # Если для данного файла выдано все ожидаемые элементы – освобождаем кэш.
+        if self._cache_usage[fp_idx] >= expected_count:
+            del self._cache[fp_idx]
+            del self._cache_usage[fp_idx]
+
+        return result
+
+    def process_fp_data(self, fp_data):
+        """
+        Загружает изображение и маску, выполняет предварительную обработку и, при необходимости,
+        разбивает изображение на квадраты. Помимо изображений и масок, возвращает соответствующую
+        info (словарь, содержащий поля из fp_data и параметр 'sq').
+        """
+        img = self.read_image(fp_data, channels=self.channels)
+        mask = self.read_mask(fp_data) // 255
+        assert img.shape[:-1] == mask.shape[:-1]
+
+        if self.classes is not None:
+            mask = self._prepare_mask(mask, cls_num=len(self.classes),
+                                      cls=self.classes.index(fp_data['cls']),
+                                      contour_thickness=self.contour_thickness)
+        else:
+            mask = self._prepare_mask(mask, cls_num=1, cls=0,
+                                      contour_thickness=self.contour_thickness)
+        shadow = self.read_shadow(fp_data)[..., 0:1] if self.add_shadow_to_img else None
+
+        result_images, result_masks, result_shadows, result_infos = [], [], [], []
+
+        if all(v is not None for v in [self.full_size, self.squares, self.border]):
+            # Разбиваем изображение и маску на квадраты.
+            _, img_sq_list = split_image(img, self.full_size, self.squares, self.border)
+            _, mask_sq_list = split_image(mask, self.full_size, self.squares, self.border)
+            if self.add_shadow_to_img:
+                _, shadow_sq_list = split_image(shadow, self.full_size, self.squares, self.border)
+            else:
+                shadow_sq_list = [None] * len(img_sq_list)
+
+            for img_sq, msk_sq, shd_sq, sq in zip(img_sq_list, mask_sq_list, shadow_sq_list, self.squares):
+                result_images.append(img_sq)
+                result_masks.append(msk_sq.astype(np.bool_))
+                result_shadows.append(shd_sq)
+                # Формируем info: включаем координаты квадрата (или другие поля) и поля из fp_data.
+                info_sq = dict(sq=sq)
+                info_sq.update(fp_data)
+                result_infos.append(info_sq)
+        else:
+            result_images.append(img)
+            result_masks.append(mask.astype(np.bool_))
+            result_shadows.append(shadow)
+            result_infos.append(fp_data)
+
+        return result_images, result_masks, result_shadows, result_infos
+
+    @staticmethod
+    def read_image(fp_data, channels=None, convert=None):
+        """
+        Считывает изображение по заданным каналам.
+        """
+        if channels is None:
+            channels = ['r', 'g', 'b']
+        c_stack = []
+        for c_idx, c in enumerate(channels):
+            c_img = Image.open(fp_data[f'{c}_fp'])
+            if convert:
+                c_img = np.asarray(c_img.convert(convert))
+            else:
+                c_img = np.asarray(c_img)[..., c_idx]
+            c_stack.append(c_img)
+        return np.stack(c_stack, axis=-1)
+
+    @staticmethod
+    def read_mask(fp_data):
+        return CellDataset4Test.read_image(fp_data, channels=['mask'])
+
+    @staticmethod
+    def read_shadow(fp_data):
+        return CellDataset4Test.read_image(fp_data, channels=['p'], convert='L')
+
+    @staticmethod
+    def _prepare_mask(mask, cls_num=1, cls=0, contour_thickness=2):
+        """
+        Выделяет контуры на маске и создает дополнительный канал для контура.
+        """
+        mask_contour = mask.copy()
+        contours, _ = cv2.findContours(mask_contour, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        _ = cv2.drawContours(mask_contour, contours, contourIdx=-1, color=[2], thickness=contour_thickness)
+        mask_prepared = np.zeros((mask.shape[0], mask.shape[1], cls_num + 1), dtype=mask.dtype)
+        mask_prepared[..., cls:cls + 1][mask_contour == 1] = 1
+        mask_prepared[..., cls_num:cls_num + 1][mask_contour == 2] = 1
+        return mask_prepared
+
+    def aug(self, img, mask, shadow=False):
+        """
+        Если заданы аугментация или препроцессинг, то применяет их.
+        При наличии shadow добавляет его как дополнительный канал.
+        """
+        if self.augmentation or self.preprocessing:
+            mask = mask.astype(np.uint8)
+            if shadow is None:
+                if self.augmentation:
+                    sample = self.augmentation(image=img, mask=mask)
+                    img, mask = sample['image'], sample['mask']
+                if self.preprocessing:
+                    sample = self.preprocessing(image=img, mask=mask)
+                    img, mask = sample['image'], sample['mask']
+            else:
+                if self.augmentation:
+                    sample = self.augmentation(image=img, mask=mask, shadow=shadow)
+                    img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
+                if self.preprocessing:
+                    sample = self.preprocessing(image=img, mask=mask, shadow=shadow)
+                    img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
+                # Добавляем дополнительный канал для shadow (если shadow имеет 1 канал)
+                img = np.dstack([img, shadow[..., 0]])
+            return img / 255, mask
+        else:
+            return img / 255, mask
+
+
 class ApplyToImageOnly(A.ImageOnlyTransform):
     def __init__(self, transform, always_apply=False, p=1.0):
         super(ApplyToImageOnly, self).__init__(always_apply, p)
@@ -616,7 +1261,8 @@ class CombinedLoss(torch.nn.Module):
 
     def to(self, device):
         self.device = device
-      
+
+
 def parse_filename_nd2(filename):
     # Определяем шаблон для поиска
     pattern = r'^(.*?)_LF(\d+)-P(\d+)_(.*?)_(\d+)\.nd2$'
@@ -634,7 +1280,6 @@ def parse_filename_nd2(filename):
         return group1, group2, group3, group4
     else:
         return None
-
 
 
 def get_classes_from_fps(fps, classes_groups=None):
@@ -743,6 +1388,20 @@ def prepare_data(dataset_dir,
                             max_workers=max_workers
                             )
 
+    def dataset_test_fn(fp_data, aug):
+        return CellDataset4Test(fp_data,
+                                full_size=full_size,
+                                add_shadow_to_img=add_shadow_to_img,
+                                squares=squares,
+                                border=border,
+                                augmentation=aug,
+                                preprocessing=preprocessing,
+                                classes=classes,
+                                channels=channels,
+                                target_size=target_size,
+                                contour_thickness=contour_thickness
+                                )
+
     fp_data_list = SimpleNamespace(train=train_fp_data,
                                    valid=val_fp_data,
                                    test=test_fp_data)
@@ -750,7 +1409,7 @@ def prepare_data(dataset_dir,
                                valid=get_validation_augmentation(target_size=transform_size),
                                test=get_validation_augmentation(target_size=transform_size))
 
-    return fp_data_list, aug_list, dataset_fn
+    return fp_data_list, aug_list, dataset_fn, dataset_test_fn
 
 
 class TrainEpochSchedulerStep(smp.utils.train.Epoch):
@@ -785,7 +1444,7 @@ class TrainEpochSchedulerStep(smp.utils.train.Epoch):
         str_logs = ["{} - {:7.4}".format(k, v) for k, v in logs.items()]
         s = ", ".join(str_logs)
         return s
-    
+
     def run(self, dataloader):
 
         self.on_epoch_start()

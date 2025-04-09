@@ -51,7 +51,7 @@ if __name__ == '__main__':
     #                   '+2024-05-08-LF1p18sl2': 18,
     #                   '+2024-05-31-LF1-p22': 18}
     # channels= ['r', 'g', 'b']
-    
+
     dataset_dir = wj_msc_dir
     exp_class_dict = {'2024-05-01-wj-MSC-P57p3': 3,
                       '2024-05-03-wj-MSC-P57p5': 3,
@@ -60,7 +60,7 @@ if __name__ == '__main__':
                       '2024-05-02-wj-MSC-P57p11': 11,
                       '2024-05-03-wj-MSC-P57p13': 11,
                       '2024-05-02-wj-MSC-P57p15sl2': 11}
-    channels= ['b']
+    channels = ['b']
 
     if test:
         run_clear_ml = False
@@ -73,7 +73,7 @@ if __name__ == '__main__':
         shuffle = True
         images_num = None
         max_epochs = 50
-   
+
     channels_num = len(channels)
     if add_shadow_to_img:
         channels_num += 1  # shadow
@@ -120,9 +120,9 @@ if __name__ == '__main__':
 
     params = SimpleNamespace(**params)
 
-    fp_data_list, aug_list, dataset_fn = prepare_data_from_params(params,
-                                                                  shuffle=shuffle,
-                                                                  max_workers=8)
+    fp_data_list, aug_list, dataset_fn, dataset_test_fn = prepare_data_from_params(params,
+                                                                                   shuffle=shuffle,
+                                                                                   max_workers=8)
 
     dataset_params = SimpleNamespace(fp_data_list=fp_data_list,
                                      aug_list=aug_list,
