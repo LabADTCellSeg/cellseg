@@ -1,6 +1,6 @@
 import random
 from types import SimpleNamespace
-import tqdm
+from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PIL import Image

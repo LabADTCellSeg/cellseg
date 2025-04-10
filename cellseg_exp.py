@@ -26,8 +26,6 @@ from cellseg_dataset import (
     prepare_data_from_params
 )
 
-from cellseg_utils import prepare_data_from_params
-
 import matplotlib
 from PIL import Image
 

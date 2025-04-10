@@ -10,7 +10,7 @@ from cellseg_dataset import prepare_data_from_params
 
 CASCADE = False
 run_clear_ml = True
-test = False
+test = True
 
 if CASCADE:
     server_name = 'CASCADE'
