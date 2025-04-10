@@ -1,3 +1,5 @@
+# This module provides utility functions to calculate cell statistics and draw ellipses based on the segmentation results.
+
 import math
 import numpy as np
 import pandas as pd
@@ -6,6 +8,7 @@ import ast
 import cv2
 
 from scipy.spatial.distance import directed_hausdorff
+
 
 def calculate_mse(contour_pts, center, axes, angle):
     # Generate the rotated rectangle that bounds the ellipse
@@ -21,6 +24,7 @@ def calculate_mse(contour_pts, center, axes, angle):
 
 
 def calc_ps(passage_mask, contour):
+    # Initialize a contour mask for the passage mask
     passage_mask_contour = np.zeros(
         (passage_mask.shape[1], passage_mask.shape[2]))
     cv2.drawContours(passage_mask_contour, [
@@ -42,20 +46,20 @@ def calc_ps(passage_mask, contour):
 
 
 def get_cell_statistics(matrix, exp, exp_class_dir, p, pgr, marker, n, passage_mask=None):
-    # Convert matrix to uint8 for cv2 operations
+    # Convert matrix to uint8 for OpenCV operations
     matrix_uint8 = (matrix * 255).astype(np.uint8)
 
-    # Find contours of cells
+    # Find external contours from the matrix
     contours, _ = cv2.findContours(
         matrix_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Initialize lists to store statistics
+    # Lists to store statistics for each cell
     centers = []
     areas = []
     roundnesses = []
     ellipse_widths = []
     ellipse_heights = []
-    angles = []  # New list for storing angles
+    angles = []
     hausdorff_distances = []
 
     if passage_mask is not None:
@@ -63,24 +67,24 @@ def get_cell_statistics(matrix, exp, exp_class_dir, p, pgr, marker, n, passage_m
         p2_list = []
         p3_list = []
 
-    # Calculate statistics for each cell
+    # Calculate statistics for each detected contour (cell)
     for contour in contours:
-        # Calculate moments to find centroid
+        # Calculate moments to determine centroid
         moments = cv2.moments(contour)
         if moments['m00'] != 0:
             center_x = int(moments['m10'] / moments['m00'])
             center_y = int(moments['m01'] / moments['m00'])
 
-            # Calculate area
+            # Calculate area of the cell
             area = cv2.contourArea(contour)
             if passage_mask is not None:
                 p1, p2, p3 = calc_ps(passage_mask, contour)
 
-            # Calculate roundness
+            # Calculate roundness (a measure of shape compactness)
             perimeter = cv2.arcLength(contour, True)
             roundness = (4 * np.pi * area) / (perimeter ** 2)
 
-            # Fit ellipse to the contour
+            # Fit an ellipse to the contour if enough points are available
             if contour.shape[0] > 5:
                 ellipse = cv2.fitEllipse(contour)
 
@@ -90,12 +94,11 @@ def get_cell_statistics(matrix, exp, exp_class_dir, p, pgr, marker, n, passage_m
                 # Extract the angle of the fitted ellipse
                 angle = ellipse[2]
 
-                # Calculate Hausdorff distance between ellipse contour and actual contour
+                # Calculate Hausdorff distance between the fitted ellipse and the contour
                 ellipse_center, ellipse_axes, ellipse_angle = ellipse
-                # Get contour points of the fitted ellipse
-                ellipse_points = cv2.ellipse2Poly((int(ellipse_center[0]), int(ellipse_center[1])), (int(ellipse_axes[0] / 2), int(ellipse_axes[1] / 2)),
+                ellipse_points = cv2.ellipse2Poly((int(ellipse_center[0]), int(ellipse_center[1])),
+                                                  (int(ellipse_axes[0] / 2), int(ellipse_axes[1] / 2)),
                                                   int(ellipse_angle), 0, 360, 10)
-                # Calculate Hausdorff distance between ellipse contour and actual contour
                 hausdorff_distance = directed_hausdorff(
                     ellipse_points.reshape(-1, 2), contour.reshape(-1, 2))[0]
 
@@ -134,28 +137,27 @@ def get_cell_statistics(matrix, exp, exp_class_dir, p, pgr, marker, n, passage_m
         pred_p = np.argmax(pred_p_all, axis=0) + 1
         res_dict['Pred_PGr'] = pred_p.tolist()
 
-    # Create pandas DataFrame
+    # Create and return a DataFrame with the computed statistics
     df = pd.DataFrame(res_dict)
 
     return df
 
 
 def draw_ellipses(statistics_df, target_size=(1024, 1024), hd_max=10, thickness=1):
-    # Create a blank image to draw ellipses on
+    # Create blank images for drawing ellipses and contours
     contours_image = np.zeros(target_size, dtype=np.uint8)
     ellipses_image = np.zeros(target_size, dtype=np.uint8)
-    # Iterate through each row in the DataFrame
+    # Draw ellipses on the image for rows with low Hausdorff distance (good fit)
     for _, row in statistics_df.iterrows():
         if row['Hausdorff Distance'] <= hd_max:
-            # Extract ellipse parameters
+            # Extract ellipse parameters from the DataFrame
             center_x, center_y = ast.literal_eval(row['Center'])
             if not math.isnan(row['Ellipse Width']):
                 ellipse_width = int(row['Ellipse Width'])
                 ellipse_height = int(row['Ellipse Height'])
                 angle = int(row['Angle'])
 
-                # Draw ellipse on the image
-
+                # Draw the ellipse on the blank image
                 cv2.ellipse(ellipses_image, (center_x, center_y),
                             (ellipse_width // 2, ellipse_height // 2), angle, 0, 360, 1, -1)
 

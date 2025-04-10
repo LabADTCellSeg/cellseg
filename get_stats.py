@@ -1,3 +1,5 @@
+# This script calculates cell statistics from segmentation results and saves the results as CSV and image files.
+
 from pathlib import Path
 from PIL import Image
 import cv2
@@ -16,7 +18,7 @@ from cellseg_config import *
 
 
 if __name__ == '__main__':
-    max_workers = 8  # max value == CPU cores
+    max_workers = 8  # Maximum number of parallel workers (typically equal to CPU cores)
     exp_class_dict = {'2024-05-01-wj-MSC-P57p3': 1,
                       '2024-05-03-wj-MSC-P57p5': 1,
                       '2024-05-01-wj-MSC-P57p7': 2,
@@ -25,6 +27,7 @@ if __name__ == '__main__':
                       '2024-05-03-wj-MSC-P57p13': 3,
                       '2024-05-02-wj-MSC-P57p15sl2': 3}
 
+    # Set up directories using configuration values
     # model_results_dir = 'out/WJ-MSC-P57/MC_DeepLabV3Plus_timm-efficientnet-b0_20250116_130611'
     exp_dir = Path(exp_dir)
     dataset_dir = Path(dataset_dir)
@@ -37,8 +40,10 @@ if __name__ == '__main__':
     res_csv_stat_dir.mkdir(exist_ok=True, parents=True)
 
     all_fp_data = get_all_fp_data(dataset_dir, exp_class_dict)
+    # Sort file pointer data by index
     all_fp_data = sorted(all_fp_data, key=lambda d: d['idx'])
 
+    # Define color shifts for visualization
     color_shift_red = (+100, -100, -100)
     color_shift_green = (-200, +200, -200)
     color_shift_blue = (-100, -100, +100)
@@ -49,9 +54,11 @@ if __name__ == '__main__':
                         color_shift_blue,
                         color_shift_yellow]
 
+    # Set erosion and dilation parameters
     er = 20
     dil = er
 
+    # Select samples that have predicted masks available
     samples_to_analyze = list()
     for sample_data in all_fp_data:
         pred_mask_fp_list = [
@@ -61,11 +68,12 @@ if __name__ == '__main__':
             samples_to_analyze.append([sample_data,
                                        pred_mask_fp_list])
 
-    # result tables and images
+    # Parameters for result generation
     num_samples = None
     rewrite_existed = True
 
     def process(args):
+        # Process a single sample: load image, mask and predicted masks, compute statistics and save outputs
         sample_data, pred_mask_fp_list = args
 
         idx = sample_data['idx']
@@ -90,6 +98,7 @@ if __name__ == '__main__':
         res_csv_fp = (exp_out_dir / f'{idx}result').with_suffix('.csv')
         res_img_fp = (exp_out_dir / f'{idx}result').with_suffix('.png')
 
+        # Process and generate predicted masks if result files are missing or rewriting is allowed
         if not res_csv_fp.exists() or not res_img_fp.exists() or rewrite_existed:
             img = np.asarray(Image.open(image_fp))
             mask = np.asarray(Image.open(mask_fp))
@@ -104,6 +113,7 @@ if __name__ == '__main__':
 
             pred_masks = np.stack(pred_masks, axis=-1)
 
+        # Calculate cell statistics and save CSV results
         if rewrite_existed or not res_csv_fp.exists():
             passage_mask = None
             if pred_masks.shape[-1] > 2:
@@ -135,6 +145,7 @@ if __name__ == '__main__':
         else:
             statistics_df = pd.read_csv(res_csv_fp, index_col=0)
 
+        # Generate and save the result image overlay
         if rewrite_existed or not res_img_fp.exists():
             contours_image = draw_ellipses(statistics_df, target_size=(
                 img.shape[0], img.shape[1]), hd_max=50, thickness=3)
@@ -160,9 +171,10 @@ if __name__ == '__main__':
             result_img = Image.fromarray(result_matrix.astype(np.uint8))
             result_img.save(res_img_fp)
 
+    # Parallel processing of samples
     process_map(process, samples_to_analyze[:num_samples], max_workers=max_workers, chunksize=1)
 
-    # results for all samples
+    # Aggregate results: concatenate CSV files and save full statistics
     csv_list = list(out_dir.rglob('*.csv'))
     csv_list.sort()
     csv_list = list(filter(lambda x: 'csv_stat' not in str(x), csv_list))
@@ -174,9 +186,7 @@ if __name__ == '__main__':
     # result_pd['Pred_true'] = result_pd['Pred_PGr'] == result_pd['PGr']
     result_pd.to_csv(res_csv_stat_dir / 'result_all.csv', index=0)
 
-    # stat for all samples
-
-    # stat by marker
+    # Generate statistics grouped by marker
     Marker_unique = result_pd['Marker'].unique().tolist()
     Marker_unique.sort()
     for m in Marker_unique:
@@ -184,7 +194,7 @@ if __name__ == '__main__':
         m_pd = m_pd.sort_values(['P'])
         m_pd.to_csv(res_csv_stat_dir / f'result_{m}.csv', index=0)
 
-    # count
+    # Compute counts and mean areas for each experiment and sample group
     Exp_list = []
     Exp_dir_list = []
     P_list = []

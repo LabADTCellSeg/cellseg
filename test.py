@@ -1,3 +1,5 @@
+# This script runs a test experiment on the best saved model using the specified test configuration.
+
 from cellseg_exp import test_exp
 from cellseg_config import *
 

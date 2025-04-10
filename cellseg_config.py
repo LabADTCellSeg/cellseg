@@ -1,3 +1,5 @@
+# Configuration file for the CellSeg project. Set experiment and dataset paths here.
+
 # For single class
 # exp = 'WJ-MSC-P57'
 # model_name = 'DeepLabV3Plus_timm-efficientnet-b0_20241119_172741'

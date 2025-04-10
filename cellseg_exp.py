@@ -1,3 +1,5 @@
+# This module contains functions for running experiments including training and testing the segmentation model.
+
 import os
 import copy
 from types import SimpleNamespace
@@ -29,16 +31,19 @@ from cellseg_dataset import (
 import matplotlib
 from PIL import Image
 
+
+# Set matplotlib backend based on display availability
 if os.environ.get('DISPLAY', '') == '':
     print("No display found. Using non-interactive Agg backend.")
-    matplotlib.use('Agg')  # Используем Agg для headless режима
+    matplotlib.use('Agg')  # Using Agg for headless mode
 else:
-    matplotlib.use('TkAgg')  # Используем TkAgg для обычного режима
+    matplotlib.use('TkAgg')  # Using TkAgg for normal mode
 
 import matplotlib.pyplot as plt
 
 
 def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
+    # Prepare DataLoaders if max_epochs is specified
     if p.max_epochs != -1:
         train_dataset = d.dataset_fn(d.fp_data_list.train, d.aug_list.train)
         train_loader = DataLoader(train_dataset, batch_size=p.batch_size,
@@ -58,14 +63,14 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
         log_dir = Path('Run')
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Freeze layers by name
+    # Function to freeze layers by name within the model
     def freeze_layers_by_name(model, layer_names):
         for name, param in model.named_parameters():
             for layer_name in layer_names:
                 if layer_name in name:
                     param.requires_grad = False
 
-    # # create segmentation model with pretrained encoder
+    # Create segmentation model with a pretrained encoder
     model_fn = getattr(importlib.import_module(
         'segmentation_models_pytorch'), p.model_name)
     model = model_fn(
@@ -75,6 +80,7 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
         classes=p.classes_num,
         activation=p.ACTIVATION,
     )
+    # Alternative model creation code is commented out below
     # model = create_model_with_separate_decoder_for_boundary(model_name=p.model_name,
     #                                                         encoder_name=p.ENCODER,
     #                                                         encoder_weights=p.ENCODER_WEIGHTS,
@@ -87,6 +93,7 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
     if p.model_load_fp is None:
         print('created new')
     else:
+        # Load model weights from file
         # model = torch.load(p.model_load_fp)
         pretrained_dict = torch.load(p.model_load_fp).state_dict()
 
@@ -95,16 +102,16 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
         keys_to_load = [k for k in pretrained_dict.keys() if
                         k in model_dict.keys() and not k.startswith('segmentation_head') and not k.startswith(
                             'encoder.conv_stem')]
-        # 1. filter out unnecessary keys
+        # 1. Filter out unnecessary keys
         if not p.model_load_full:
             pretrained_dict = {
                 k: v for k, v in pretrained_dict.items() if k in keys_to_load}
-        # 2. overwrite entries in the existing state dict
+        # 2. Update the current model state dictionary
         model_dict.update(pretrained_dict)
-        # 3. load the new state dict
+        # 3. Load the updated state dictionary into the model
         model.load_state_dict(model_dict)
 
-        # Freeze the specified layers
+        # Optionally freeze specified layers (commented out)
         # layers_to_freeze = [k for k in pretrained_dict.keys() if k in model_dict.keys() and k.startswith('encoder')]
         # freeze_layers_by_name(model, layers_to_freeze)
         # # Verify which layers are frozen
@@ -115,6 +122,7 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
 
     summary(model)
 
+    # Define loss and metric functions
     # Dice/F1 score - https://en.wikipedia.org/wiki/S%C3%B8rensen%E2%80%93Dice_coefficient
     # IoU/Jaccard score - https://en.wikipedia.org/wiki/Jaccard_index
     # loss = smp.losses.DiceLoss('multilabel')
@@ -143,24 +151,19 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
         dict(params=model.parameters(), lr=p.lr_first),
     ])
 
-    # a, b = next(iter(test_loader))
-    # ans = loss(b, b)
-    # print(ans)
-
-    # create epoch runners
-    # it is a simple loop of iterating over dataloader`s samples
+    # Configure learning rate scheduler: step every batch if specified
     if p.scheduler_step_every_batch:
         gamma = pow(p.lr_last / p.lr_first, 1 / (p.max_epochs *
                     len(train_loader))) if p.max_epochs != 0 else 0
         scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer, step_size=1, gamma=gamma, last_epoch=-1)
-
     else:
         gamma = pow(p.lr_last / p.lr_first, 1 /
                     p.max_epochs) if p.max_epochs != 0 else 0
         scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer, step_size=1, gamma=gamma, last_epoch=-1)
 
+    # Override the log formatting method for training epoch logging
     def _format_logs(self, logs):
         str_logs = ["{} - {:.4f}".format(k, v) for k, v in logs.items()]
         s = ", ".join(str_logs)
@@ -168,6 +171,7 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
 
     smp.utils.train.Epoch._format_logs = _format_logs
 
+    # Create training and validation epoch runners
     train_epoch = TrainEpochSchedulerStep(
         model,
         loss=loss,
@@ -186,16 +190,11 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
         verbose=True,
     )
 
-    # TRAIN
-
+    # Save training parameters to JSON file
     with open(log_dir / 'params.json', 'w') as f:
         p_dump = copy.copy(p)
         p_dump.dataset_dir = str(p_dump.dataset_dir)
         json.dump(vars(p_dump), f, indent=4)
-
-    # with open(log_dir / 'params.json', 'r') as f:
-    #     loaded_params = SimpleNamespace(**json.load(f))
-    #     loaded_params.dataset_dir = Path(loaded_params.dataset_dir)
 
     if run_clear_ml:
         task = Task.init(project_name="CellSeg4",
@@ -214,14 +213,12 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
         train_logs = train_epoch.run(train_loader)
         for k, v in train_logs.items():
             writer.add_scalar(f'{k}/train', v, epoch)
-            # print(f"{' '.join(k.split('_')).title()}: {v:.2f}")
 
         valid_logs = valid_epoch.run(valid_loader)
         for k, v in valid_logs.items():
             writer.add_scalar(f'{k}/val', v, epoch)
-            # print(f"{' '.join(k.split('_')).title()}: {v:.2f}")
 
-        # do something (save model, change lr, etc.)
+        # Save the model if a new maximum IoU score is achieved
         if max_score < valid_logs['IoU']:
             max_score = valid_logs['IoU']
             torch.save(model, log_dir / 'best_model.pth')
@@ -230,25 +227,18 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
         if not p.scheduler_step_every_batch:
             scheduler.step()
 
-    # load best saved checkpoint
+    # Testing: load best model and evaluate on test set
     print('-' * 80)
     print('TEST:')
-    # best_model = model
 
     del train_loader
     del train_dataset
-    # del valid_loader
-    # del valid_dataset
     gc.collect()
 
-    # test_dataset = d.dataset_fn(d.fp_data_list.test, d.aug_list.valid)
-    # test_loader = DataLoader(test_dataset, batch_size=p.batch_size,
-    #                          shuffle=False, drop_last=False)
-
+    # For testing we use the validation dataset
     test_dataset = valid_dataset
     test_loader = valid_loader
 
-    # evaluate model on test set
     test_epoch = smp.utils.train.ValidEpoch(
         model=model,
         loss=loss,
@@ -276,6 +266,7 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
 
 
 def test_exp(exp_dir, out_dir, dataset_dir, draw=True, use_all=False, batch_size=None):
+    # Test experiment: load parameters, data and model for testing the segmentation model
     exp_dir = Path(exp_dir)
     out_dir = Path(out_dir)
 
@@ -302,17 +293,14 @@ def test_exp(exp_dir, out_dir, dataset_dir, draw=True, use_all=False, batch_size
     test_loader = DataLoader(test_dataset, batch_size=p.batch_size,
                              shuffle=False, num_workers=1, drop_last=True)
 
-    # print(test_dataset[0][0].shape)
-    # print(test_dataset[0][1].shape)
-
-    # Freeze layers by name
+    # Function to freeze layers by name (if needed)
     def freeze_layers_by_name(model, layer_names):
         for name, param in model.named_parameters():
             for layer_name in layer_names:
                 if layer_name in name:
                     param.requires_grad = False
 
-    # # create segmentation model with pretrained encoder
+    # Create segmentation model with the specified configuration
     model_fn = getattr(importlib.import_module(
         'segmentation_models_pytorch'), p.model_name)
     model = model_fn(
@@ -333,37 +321,18 @@ def test_exp(exp_dir, out_dir, dataset_dir, draw=True, use_all=False, batch_size
     keys_to_load = [k for k in pretrained_dict.keys() if
                     k in model_dict.keys() and not k.startswith('segmentation_head') and not k.startswith(
                         'encoder.conv_stem')]
-    # 1. filter out unnecessary keys
     if not p.model_load_full:
         pretrained_dict = {
             k: v for k, v in pretrained_dict.items() if k in keys_to_load}
-    # 2. overwrite entries in the existing state dict
     model_dict.update(pretrained_dict)
-    # 3. load the new state dict
     model.load_state_dict(model_dict)
-
-    # Freeze the specified layers
-    # layers_to_freeze = [k for k in pretrained_dict.keys() if k in model_dict.keys() and k.startswith('encoder')]
-    # freeze_layers_by_name(model, layers_to_freeze)
-    # # Verify which layers are frozen
-    # for name, param in model.named_parameters():
-    #     print(name, param.requires_grad)
 
     print(f'loaded {p.model_load_fp}')
 
     summary(model)
 
-    # Dice/F1 score - https://en.wikipedia.org/wiki/S%C3%B8rensen%E2%80%93Dice_coefficient
-    # IoU/Jaccard score - https://en.wikipedia.org/wiki/Jaccard_index
-    # loss = smp.losses.DiceLoss('multilabel')
-    # loss.__name__ = 'dice'
-
-    # loss = BCEDiceLoss(bce_weight=p.bce_weight)
-    # loss = FocalLossMultiClass(alpha=p.focal_alpha, gamma=p.focal_gamma)
     loss = CombinedLoss(bce_weight=p.bce_weight,
                         alpha=p.focal_alpha, gamma=p.focal_gamma)
-    # loss = WeightedBCEDiceLoss(bce_weight=p.bce_weight, boundary_weight=0.999)
-
     iou = smp.utils.metrics.IoU(threshold=0.5)
     iou.__name__ = 'IoU'
 
@@ -404,16 +373,13 @@ def test_exp(exp_dir, out_dir, dataset_dir, draw=True, use_all=False, batch_size
 
 
 def draw_and_save_results(out_dir, test_dataset, test_loader, model, p):
-    # visualize results of best saved model
+    # Visualize and save the results of the best model on the test dataset
     iou_metric_list = list()
 
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / 'full').mkdir(parents=True, exist_ok=True)
     (out_dir / 'compare').mkdir(parents=True, exist_ok=True)
     (out_dir / 'predicted_masks').mkdir(parents=True, exist_ok=True)
-
-    # for directory in ['image', 'gt', 'pr', 'compare']:
-    #     os.makedirs(os.path.join(out_dir, directory), exist_ok=True)
 
     w = h = 20
     img_num = p.channels_num + 2
@@ -434,7 +400,6 @@ def draw_and_save_results(out_dir, test_dataset, test_loader, model, p):
     for batch_idx, (x, y) in enumerate(test_loader):
         pred_y = model.predict(x.to(p.DEVICE))
         test_loader.dataset.__getitem__(batch_idx * p.batch_size)
-        # info = None
         for img_idx in range(y.shape[0]):
             n = batch_idx * p.batch_size + img_idx
             info = test_dataset.info[n]
@@ -459,7 +424,7 @@ def draw_and_save_results(out_dir, test_dataset, test_loader, model, p):
                 torch.from_numpy(gt_mask), torch.from_numpy(pr_mask))
             iou_metric_list.append(iou_metric)
 
-        # accumulated
+        # Process accumulated images once enough samples are collected
         if (len(img_list) >= len(squares)) or (batch_idx == len(test_loader) - 1):
             res_idx = info_list[0]['idx']
             print(f'save results for: {res_idx}')
@@ -569,7 +534,7 @@ def draw_and_save_results(out_dir, test_dataset, test_loader, model, p):
             info_list = info_list[len(squares):]
             pbar.update(1)
 
-            # Trigger garbage collection manually
+            # Manually trigger garbage collection to free memory
             gc.collect()
     pbar.close()
     return iou_metric_list

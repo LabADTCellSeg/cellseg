@@ -1,3 +1,7 @@
+# This module provides loss functions and training utilities for the CellSeg project.
+# It includes functions for Dice loss, BCE-Dice loss, focal loss, and combined loss,
+# as well as a custom training epoch class with learning rate scheduler steps.
+
 import sys
 from tqdm import tqdm
 
@@ -7,13 +11,21 @@ import segmentation_models_pytorch as smp
 
 
 def dice_loss(pred, target, smooth=1.):
+    """
+    Computes the Dice loss between predictions and targets.
+    Args:
+        pred: Predicted segmentation map.
+        target: Ground truth segmentation map.
+        smooth: Smoothing factor to avoid division by zero.
+    Returns:
+        Mean Dice loss.
+    """
     pred = pred.contiguous()
     target = target.contiguous()
 
     intersection = (pred * target).sum()
 
-    loss = (1 - ((2. * intersection + smooth) / (
-            pred.sum() + target.sum() + smooth)))
+    loss = (1 - ((2. * intersection + smooth) / (pred.sum() + target.sum() + smooth)))
 
     return loss.mean()
 
@@ -22,6 +34,7 @@ class BCEDiceLoss:
     __name__ = 'bce_dice'
 
     def __init__(self, bce_weight=0.5):
+        # Initialize BCE-Dice loss with given weight.
         self.bce_weight = bce_weight
         self.device = 'cpu'
         if self.bce_weight == 0:
@@ -30,13 +43,16 @@ class BCEDiceLoss:
             self.__call__ = self.bce_loss_calc
 
     def __call__(self, pred, target):
+        # Combine BCE and Dice losses weighted by bce_weight.
         return (self.bce_loss_calc(pred, target) * self.bce_weight +
                 self.dice_loss_calc(pred, target) * (1 - self.bce_weight))
 
     def dice_loss_calc(self, pred, target):
+        # Calculate Dice loss after applying sigmoid on predictions.
         return dice_loss(torch.sigmoid(pred), target).to(self.device)
 
     def bce_loss_calc(self, pred, target):
+        # Calculate Binary Cross Entropy loss with logits.
         return F.binary_cross_entropy_with_logits(pred, target, reduction='mean').to(self.device)
 
     def to(self, device):
@@ -47,6 +63,7 @@ class WeightedBCEDiceLoss:
     __name__ = 'bce_dice'
 
     def __init__(self, bce_weight=0.5, boundary_weight=0.99):
+        # Initialize weighted BCE-Dice loss, giving extra weight to boundary predictions.
         self.bce_weight = bce_weight
         self.device = 'cpu'
         self.boundary_weight = boundary_weight
@@ -56,18 +73,18 @@ class WeightedBCEDiceLoss:
             self.__call__ = self.bce_loss_calc
 
     def __call__(self, pred, target):
-        # Рассчитываем BCE и Dice для каждого канала
+        # Compute losses for cells and boundaries separately and combine them.
         bce_cells = self.bce_loss_calc(pred[:, :-1, :, :], target[:, :-1, :, :])
         bce_boundaries = self.bce_loss_calc(pred[:, -1, :, :], target[:, -1, :, :])
 
         dice_cells = self.dice_loss_calc(torch.sigmoid(pred[:, :-1, :, :]), target[:, :-1, :, :])
         dice_boundaries = self.dice_loss_calc(torch.sigmoid(pred[:, -1, :, :]), target[:, -1, :, :])
 
-        # Применяем разные веса для границ
-        bce_loss = (bce_cells + self.boundary_weight * bce_boundaries) / (1 + self.boundary_weight)
-        dice_loss = (dice_cells + self.boundary_weight * dice_boundaries) / (1 + self.boundary_weight)
+        # Apply different weights for boundary components.
+        bce_loss_val = (bce_cells + self.boundary_weight * bce_boundaries) / (1 + self.boundary_weight)
+        dice_loss_val = (dice_cells + self.boundary_weight * dice_boundaries) / (1 + self.boundary_weight)
 
-        return bce_loss * self.bce_weight + dice_loss * (1 - self.bce_weight)
+        return bce_loss_val * self.bce_weight + dice_loss_val * (1 - self.bce_weight)
 
     def dice_loss_calc(self, pred, target):
         return dice_loss(torch.sigmoid(pred), target).to(self.device)
@@ -89,9 +106,9 @@ class FocalLoss(torch.nn.Module):
         self.reduction = reduction
 
     def __call__(self, pred, targets):
-        # Применение сигмоиды, если это не логиты
+        # Apply BCE with logits and compute focal loss.
         BCE_loss = torch.nn.BCEWithLogitsLoss(reduction='none')(pred, targets)
-        pt = torch.exp(-BCE_loss)  # pt - вероятность предсказания
+        pt = torch.exp(-BCE_loss)  # pt is the probability of the prediction
         F_loss = self.alpha * (1 - pt) ** self.gamma * BCE_loss
 
         if self.reduction == 'mean':
@@ -115,7 +132,7 @@ class FocalLossMultiClass(torch.nn.Module):
         self.reduction = reduction
 
     def __call__(self, pred, targets):
-        # Cross Entropy Loss
+        # Compute Cross Entropy loss and then apply focal weighting.
         CE_loss = torch.nn.CrossEntropyLoss(reduction='none')(pred, targets)
         pt = torch.exp(-CE_loss)
         F_loss = self.alpha * (1 - pt) ** self.gamma * CE_loss
@@ -136,13 +153,14 @@ class CombinedLoss(torch.nn.Module):
 
     def __init__(self, bce_weight=0.5, alpha=0.5, gamma=2.0):
         super(CombinedLoss, self).__init__()
+        # Combine focal and BCE-Dice losses.
         self.focal_loss = FocalLossMultiClass(alpha=alpha, gamma=gamma)
         self.dice_loss = BCEDiceLoss(bce_weight=bce_weight)
 
     def __call__(self, inputs, targets):
-        focal = self.focal_loss(inputs, targets)
-        dice = self.dice_loss(inputs, targets)
-        return focal + dice
+        focal_loss_val = self.focal_loss(inputs, targets)
+        dice_loss_val = self.dice_loss(inputs, targets)
+        return focal_loss_val + dice_loss_val
 
     def to(self, device):
         self.device = device
@@ -151,6 +169,7 @@ class CombinedLoss(torch.nn.Module):
 class TrainEpochSchedulerStep(smp.utils.train.Epoch):
     def __init__(self, model, loss, metrics, optimizer, scheduler, scheduler_step_every_batch=False,
                  device="cpu", verbose=True):
+        # Custom training epoch class that supports stepping the scheduler every batch.
         super().__init__(
             model=model,
             loss=loss,
@@ -167,6 +186,7 @@ class TrainEpochSchedulerStep(smp.utils.train.Epoch):
         self.model.train()
 
     def batch_update(self, x, y):
+        # Perform one batch update: forward pass, loss calculation, backward pass, optimizer and scheduler step.
         self.optimizer.zero_grad()
         prediction = self.model.forward(x)
         loss = self.loss(prediction, y)
@@ -177,12 +197,13 @@ class TrainEpochSchedulerStep(smp.utils.train.Epoch):
         return loss, prediction
 
     def _format_logs(self, logs):
+        # Format log output.
         str_logs = ["{} - {:7.4}".format(k, v) for k, v in logs.items()]
         s = ", ".join(str_logs)
         return s
 
     def run(self, dataloader):
-
+        # Run one epoch over the dataloader.
         self.on_epoch_start()
 
         logs = {}
@@ -199,13 +220,13 @@ class TrainEpochSchedulerStep(smp.utils.train.Epoch):
                 x, y = x.to(self.device), y.to(self.device)
                 loss, y_pred = self.batch_update(x, y)
 
-                # update loss logs
+                # Update loss meter and logs.
                 loss_value = loss.cpu().detach().numpy()
                 loss_meter.add(loss_value)
                 loss_logs = {self.loss.__name__: loss_meter.mean}
                 logs.update(loss_logs)
 
-                # update metrics logs
+                # Update metrics for this batch.
                 for metric_fn in self.metrics:
                     metric_value = metric_fn(y_pred, y).cpu().detach().numpy()
                     metrics_meters[metric_fn.__name__].add(metric_value)
