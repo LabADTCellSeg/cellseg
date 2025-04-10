@@ -1,0 +1,11 @@
+name: cellseg_stat
+channels:
+  - defaults
+dependencies:
+  - numpy
+  - opencv
+  - pandas
+  - pillow
+  - python=3.10.13
+  - scipy
+  - tqdm

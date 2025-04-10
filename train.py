@@ -1,13 +1,12 @@
 from pathlib import Path
-
 from types import SimpleNamespace
 from pprint import pprint
 
 import torch
 
 from cellseg_exp import experiment
-from cellseg_utils import prepare_data_from_params, get_str_timestamp
-
+from cellseg_utils import get_str_timestamp
+from cellseg_dataset import prepare_data_from_params
 
 CASCADE = False
 run_clear_ml = True
