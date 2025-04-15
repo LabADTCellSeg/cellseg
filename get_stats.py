@@ -19,17 +19,9 @@ from cellseg_config import *
 
 if __name__ == '__main__':
     max_workers = 8  # Maximum number of parallel workers (typically equal to CPU cores)
-    exp_class_dict = {'2024-05-01-wj-MSC-P57p3': 1,
-                      '2024-05-03-wj-MSC-P57p5': 1,
-                      '2024-05-01-wj-MSC-P57p7': 2,
-                      '2024-05-04-wj-MSC-P57p9-sl2': 2,
-                      '2024-05-02-wj-MSC-P57p11': 3,
-                      '2024-05-03-wj-MSC-P57p13': 3,
-                      '2024-05-02-wj-MSC-P57p15sl2': 3}
 
     # Set up directories using configuration values
     # model_results_dir = 'out/WJ-MSC-P57/MC_DeepLabV3Plus_timm-efficientnet-b0_20250116_130611'
-    exp_dir = Path(exp_dir)
     dataset_dir = Path(dataset_dir)
     model_results_dir = Path(model_results_dir)
 
@@ -87,13 +79,21 @@ if __name__ == '__main__':
         exp_out_dir = out_dir / exp_class_dir
 
         exp_out_dir.mkdir(exist_ok=True, parents=True)
-        shutil.copy(mask_fp, exp_out_dir / mask_fp.name)
-
+        if Path(mask_fp).exists():
+            shutil.copy(mask_fp, exp_out_dir / mask_fp.name)
+        else:
+            img = np.asarray(Image.open(image_fp))
+            mask = np.zeros((img.shape[0], img.shape[1]), dtype=np.uint8)
+            mask = Image.fromarray(mask)
+            mask = mask.resize((img.shape[1], img.shape[0]))
+            mask.save(exp_out_dir / mask_fp.name)
+                
         for rgb_fp in ['b_fp', 'r_fp', 'g_fp']:
             src_fp = sample_data.get(rgb_fp)
             if src_fp is not None:
                 dst_fn = src_fp.name
-                shutil.copy(src_fp, exp_out_dir / dst_fn)
+                if Path(src_fp).exists():
+                    shutil.copy(src_fp, exp_out_dir / dst_fn)
 
         res_csv_fp = (exp_out_dir / f'{idx}result').with_suffix('.csv')
         res_img_fp = (exp_out_dir / f'{idx}result').with_suffix('.png')
@@ -101,7 +101,7 @@ if __name__ == '__main__':
         # Process and generate predicted masks if result files are missing or rewriting is allowed
         if not res_csv_fp.exists() or not res_img_fp.exists() or rewrite_existed:
             img = np.asarray(Image.open(image_fp))
-            mask = np.asarray(Image.open(mask_fp))
+            mask = np.asarray(Image.open(exp_out_dir / mask_fp.name))
             pred_masks = list()
             for pred_mask_idx, pred_mask_fp in enumerate(pred_mask_fp_list):
                 m = np.asarray(Image.open(pred_mask_fp))

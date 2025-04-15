@@ -265,15 +265,18 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
     print('DONE!')
 
 
-def test_exp(exp_dir, out_dir, dataset_dir, draw=True, use_all=False, batch_size=None):
+def test_exp(model_dir, out_dir, dataset_dir, draw=True, use_all=False, batch_size=None, exp_class_dict=None):
     # Test experiment: load parameters, data and model for testing the segmentation model
-    exp_dir = Path(exp_dir)
+    model_dir = Path(model_dir)
     out_dir = Path(out_dir)
 
-    with open(exp_dir / 'params.json', 'r') as f:
+    with open(model_dir / 'params.json', 'r') as f:
         cfg = json.load(f)
         p = SimpleNamespace(**cfg)
         p.dataset_dir = Path(dataset_dir)
+
+    if exp_class_dict is not None:
+        p.exp_class_dict = exp_class_dict
 
     if use_all:
         p.ratio_train = 0.0
@@ -311,7 +314,7 @@ def test_exp(exp_dir, out_dir, dataset_dir, draw=True, use_all=False, batch_size
         activation=p.ACTIVATION,
     )
 
-    p.model_load_fp = exp_dir / 'best_model.pth'
+    p.model_load_fp = model_dir / 'best_model.pth'
 
     # model = torch.load(p.model_load_fp)
     pretrained_dict = torch.load(str(p.model_load_fp)).state_dict()
@@ -448,6 +451,7 @@ def draw_and_save_results(out_dir, test_dataset, test_loader, model, p):
             for idx in range(restored_pr.shape[0]):
                 res_idx_name = f'{res_idx}_{idx}'
                 img = Image.fromarray(restored_pr[idx].astype(np.uint8) * 255)
+                img = img.resize(test_loader.dataset.target_size)
                 img.save((out_dir / 'predicted_masks' /
                          res_idx_name).with_suffix('.png'))
 

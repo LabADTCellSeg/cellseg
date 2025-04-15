@@ -2,6 +2,7 @@
 # It includes both precomputed datasets (CellDataset4) and test datasets (CellDataset4Test1, CellDataset4Test2, CellDataset4Test)
 # with dynamic loading, caching, augmentation, and preprocessing functionality.
 
+from pathlib import Path
 import random
 from types import SimpleNamespace
 from tqdm import tqdm
@@ -762,7 +763,16 @@ class CellDataset4Test(BaseDataset):
         Returns lists of images, masks, shadows, and infos (a dictionary containing fp_data fields and 'sq' information).
         """
         img = self.read_image(fp_data, channels=self.channels)
-        mask = self.read_mask(fp_data) // 255
+        mask = self.read_mask(fp_data)
+        if mask is None:
+            # if self.classes is not None:
+            #     mask_dim = len(self.classes)
+            # else:
+            #     mask_dim = 1
+            mask = np.zeros((img.shape[0], img.shape[1], 1), dtype=np.uint8)
+        else:
+            mask = mask // 255
+
         assert img.shape[:-1] == mask.shape[:-1]
 
         if self.classes is not None:
@@ -807,7 +817,10 @@ class CellDataset4Test(BaseDataset):
             channels = ['r', 'g', 'b']
         c_stack = []
         for c_idx, c in enumerate(channels):
-            c_img = Image.open(fp_data[f'{c}_fp'])
+            if Path(fp_data[f'{c}_fp']).exists():
+                c_img = Image.open(fp_data[f'{c}_fp'])
+            else:
+                return None
             if convert:
                 c_img = np.asarray(c_img.convert(convert))
             else:
@@ -1090,7 +1103,7 @@ def prepare_data(dataset_dir,
     val_fp_data = all_fp_data[train_num:train_num + val_num]
     test_fp_data = all_fp_data[train_num + val_num:]
 
-    img_path = all_fp_data[0]['mask_fp']
+    img_path = all_fp_data[0]['p_fp']
     with Image.open(img_path) as img:
         new_width = int(img.size[0] / resize_coef) // 32 * 32
         new_height = int(img.size[1] / resize_coef) // 32 * 32

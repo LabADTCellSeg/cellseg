@@ -38,15 +38,19 @@ def get_all_fp_data(exps_dir, exp_class_dict):
 
     all_fp_data = list()
     img_suffix = '.jpg'
+    mask_suffix = '.png'
     for cur_exp in exps_dir_list:
         cur_exp_dir = exps_dir / cur_exp
-        for mask_fp in list(cur_exp_dir.rglob('*m.png')):
+        for mask_fp in list(cur_exp_dir.rglob('*p.jpg')):
             idx = mask_fp.name[:-len(mask_fp.suffix) - 1]
+
+            m_fn = idx + 'm' + mask_suffix
             r_fn = idx + 'r' + img_suffix
             g_fn = idx + 'g' + img_suffix
             b_fn = idx + 'b' + img_suffix
             p_fn = idx + 'p' + img_suffix
 
+            m_fp = cur_exp_dir / m_fn
             r_fp = cur_exp_dir / r_fn
             g_fp = cur_exp_dir / g_fn
             b_fp = cur_exp_dir / b_fn
@@ -54,7 +58,7 @@ def get_all_fp_data(exps_dir, exp_class_dict):
 
             sample_data = dict(cls=exp_class_dict[cur_exp],
                                idx=idx,
-                               mask_fp=mask_fp,
+                               mask_fp=m_fp,
                                r_fp=r_fp,
                                g_fp=g_fp,
                                b_fp=b_fp,
