@@ -59,7 +59,7 @@ if __name__ == '__main__':
     out_dir = model_results_dir / 'stats_results'
     predicted_masks_dir = model_results_dir / 'predicted_masks'
 
-    all_fp_data = get_all_fp_data(dataset_dir, exp_class_dict)
+    all_fp_data = get_all_fp_data(dataset_dir, exp_class_dict, channels=channels)
     all_fp_data = sorted(all_fp_data, key=lambda d: d['idx'])
 
     exp = 'WJ-MSC-P57'

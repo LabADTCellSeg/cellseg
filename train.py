@@ -65,6 +65,7 @@ if __name__ == '__main__':
                       '2024-05-02-wj-MSC-P57p11': 11,
                       '2024-05-03-wj-MSC-P57p13': 11,
                       '2024-05-02-wj-MSC-P57p15sl2': 11}
+    classes = [3, 7, 11]
     channels = ['b']
 
     if test:
@@ -126,7 +127,7 @@ if __name__ == '__main__':
     params = SimpleNamespace(**params)
 
     # Prepare data for training and validation
-    fp_data_list, aug_list, dataset_fn, dataset_test_fn = prepare_data_from_params(params,
+    fp_data_list, aug_list, dataset_fn, dataset_test_fn = prepare_data_from_params(params, classes,
                                                                                    shuffle=shuffle,
                                                                                    max_workers=8)
 

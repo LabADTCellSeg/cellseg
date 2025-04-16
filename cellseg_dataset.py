@@ -817,14 +817,16 @@ class CellDataset4Test(BaseDataset):
             channels = ['r', 'g', 'b']
         c_stack = []
         for c_idx, c in enumerate(channels):
-            if Path(fp_data[f'{c}_fp']).exists():
+            if f'{c}_fp' in fp_data.keys() and Path(fp_data[f'{c}_fp']).exists():
                 c_img = Image.open(fp_data[f'{c}_fp'])
             else:
                 return None
             if convert:
                 c_img = np.asarray(c_img.convert(convert))
             else:
-                c_img = np.asarray(c_img)[..., c_idx]
+                # c_img = np.asarray(c_img)[..., c_idx]
+                c_img = np.asarray(c_img)[..., 2]  # TODO: Temporary solution. Only for blue png mode
+
             c_stack.append(c_img)
         return np.stack(c_stack, axis=-1)
 
@@ -1058,10 +1060,11 @@ def my_train_test_split(x, y, ratio_train, ratio_val, shuffle=True, seed=42):
     return x_train, x_val, x_test, y_train, y_val, y_test
 
 
-def prepare_data_from_params(params, shuffle=True, max_workers=8):
+def prepare_data_from_params(params, classes, shuffle=True, max_workers=8, ext='jpg', resize_coef=1):
     # Constructs data from provided parameters.
     return prepare_data(dataset_dir=params.dataset_dir,
                         exp_class_dict=params.exp_class_dict,
+                        classes=classes,
                         square_a=params.square_a,
                         border=params.border,
                         ratio_train=params.ratio_train,
@@ -1072,11 +1075,14 @@ def prepare_data_from_params(params, shuffle=True, max_workers=8):
                         contour_thickness=params.contour_thickness,
                         channels=params.channels,
                         shuffle=shuffle,
-                        max_workers=max_workers)
+                        max_workers=max_workers,
+                        ext=ext,
+                        resize_coef=resize_coef)
 
 
 def prepare_data(dataset_dir,
                  exp_class_dict,
+                 classes,
                  square_a=236,
                  border=10,
                  ratio_train=0.6,
@@ -1088,9 +1094,12 @@ def prepare_data(dataset_dir,
                  add_shadow_to_img=True,
                  contour_thickness=2,
                  channels=['r', 'g', 'b'],
-                 max_workers=8):
+                 max_workers=8,
+                 ext='.jpg'):
     # Retrieves file pointer data and splits it into training, validation, and test sets.
-    all_fp_data = get_all_fp_data(dataset_dir, exp_class_dict)
+    all_fp_data = get_all_fp_data(dataset_dir, exp_class_dict, channels=channels, ext=ext)
+    all_fp_data = sorted(all_fp_data, key=lambda d: d['exp_dir'] / d['idx'])
+
     if shuffle:
         random.Random(42).shuffle(all_fp_data)
     all_fp_data = all_fp_data[:images_num]
@@ -1103,7 +1112,7 @@ def prepare_data(dataset_dir,
     val_fp_data = all_fp_data[train_num:train_num + val_num]
     test_fp_data = all_fp_data[train_num + val_num:]
 
-    img_path = all_fp_data[0]['p_fp']
+    img_path = all_fp_data[0][f'{channels[0]}_fp']
     with Image.open(img_path) as img:
         new_width = int(img.size[0] / resize_coef) // 32 * 32
         new_height = int(img.size[1] / resize_coef) // 32 * 32
@@ -1124,8 +1133,11 @@ def prepare_data(dataset_dir,
     transform_size = squares[0]['square_with_borders_coords'][2:]
 
     if multiclass:
-        classes = list(set([v for v in exp_class_dict.values()]))
-        classes.sort()
+        classes_from_exp_class_dict = list(set([v for v in exp_class_dict.values()]))
+        classes_from_exp_class_dict.sort()
+        for c in classes_from_exp_class_dict:
+            if c not in classes:
+                print(f'! class "{c}" not in exp_class_dict')
     else:
         classes = None
 

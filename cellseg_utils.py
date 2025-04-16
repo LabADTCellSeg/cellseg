@@ -3,6 +3,7 @@
 import re
 import time
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 
@@ -22,7 +23,7 @@ def get_str_timestamp(timestamp=None):
     return str_date_time
 
 
-def get_all_fp_data(exps_dir, exp_class_dict):
+def get_all_fp_data(exps_dir, exp_class_dict, channels, ext='.jpg', mask_ext = '.png'):
     """
     Gathers all file pointer data from experiment directories.
     Args:
@@ -37,37 +38,32 @@ def get_all_fp_data(exps_dir, exp_class_dict):
     exps_dir_list.sort()
 
     all_fp_data = list()
-    img_suffix = '.jpg'
-    mask_suffix = '.png'
     for cur_exp in exps_dir_list:
         cur_exp_dir = exps_dir / cur_exp
-        for mask_fp in list(cur_exp_dir.rglob('*p.jpg')):
-            idx = mask_fp.name[:-len(mask_fp.suffix) - 1]
+        for mask_fp in list(cur_exp_dir.rglob(f'*{channels[0]}{ext}')):
+            idx = mask_fp.name[:-len(mask_fp.suffix) - len(channels[0])]
 
-            m_fn = idx + 'm' + mask_suffix
-            r_fn = idx + 'r' + img_suffix
-            g_fn = idx + 'g' + img_suffix
-            b_fn = idx + 'b' + img_suffix
-            p_fn = idx + 'p' + img_suffix
-
+            m_fn = Path(str(idx) + 'm' + mask_ext)
             m_fp = cur_exp_dir / m_fn
-            r_fp = cur_exp_dir / r_fn
-            g_fp = cur_exp_dir / g_fn
-            b_fp = cur_exp_dir / b_fn
-            p_fp = cur_exp_dir / p_fn
 
             sample_data = dict(cls=exp_class_dict[cur_exp],
+                               exp_dir=cur_exp_dir,
                                idx=idx,
-                               mask_fp=m_fp,
-                               r_fp=r_fp,
-                               g_fp=g_fp,
-                               b_fp=b_fp,
-                               p_fp=p_fp)
+                               mask_fp=m_fp)
+            for c in channels + ['p']:
+                c_fn = Path(str(idx) + c + ext)
+                c_fp = cur_exp_dir / c_fn
+                if c_fp.exists():
+                    sample_data[f'{c}_fp'] = c_fp
 
+            k_to_remove = list()
             for k, v in sample_data.items():
                 if '_fp' in k:
                     if not v.exists():
-                        print(f'! not exists: {v}')
+                        k_to_remove.append(k)
+                        # print(f'! not exists: {v}')
+            for k in k_to_remove:
+                del sample_data[k]
 
             all_fp_data.append(sample_data)
     return all_fp_data

@@ -31,7 +31,7 @@ if __name__ == '__main__':
     res_csv_stat_dir = out_dir / 'csv_stat'
     res_csv_stat_dir.mkdir(exist_ok=True, parents=True)
 
-    all_fp_data = get_all_fp_data(dataset_dir, exp_class_dict)
+    all_fp_data = get_all_fp_data(dataset_dir, exp_class_dict, channels=channels, ext=extension)
     # Sort file pointer data by index
     all_fp_data = sorted(all_fp_data, key=lambda d: d['idx'])
 
@@ -69,8 +69,11 @@ if __name__ == '__main__':
         sample_data, pred_mask_fp_list = args
 
         idx = sample_data['idx']
-        image_fp = sample_data['b_fp']
-        mask_fp = sample_data['mask_fp']
+        image_fp = sample_data[f'{channels[0]}_fp']
+        if 'mask_fp' in sample_data.keys():
+            mask_fp = sample_data['mask_fp']
+        else:
+            mask_fp = Path(str(image_fp)[:-4 - len(channels[0])] + 'm.png')
 
         split_fp = str(image_fp).split('/')
         exp_class_dir = split_fp[-2]
@@ -87,9 +90,9 @@ if __name__ == '__main__':
             mask = Image.fromarray(mask)
             mask = mask.resize((img.shape[1], img.shape[0]))
             mask.save(exp_out_dir / mask_fp.name)
-                
-        for rgb_fp in ['b_fp', 'r_fp', 'g_fp']:
-            src_fp = sample_data.get(rgb_fp)
+
+        for c_fp in [f'{c}_fp' for c in channels]:
+            src_fp = sample_data.get(c_fp)
             if src_fp is not None:
                 dst_fn = src_fp.name
                 if Path(src_fp).exists():
@@ -137,7 +140,7 @@ if __name__ == '__main__':
 
             p = exp_class_value
             pgr = exp_class_value
-            marker = 'b'
+            marker = channels[0]
             n = idx
             statistics_df = get_cell_statistics(
                 main_mask, exp, exp_class_dir, p, pgr, marker, n, passage_mask=passage_mask)

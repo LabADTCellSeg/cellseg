@@ -30,7 +30,7 @@ from cellseg_dataset import (
 
 import matplotlib
 from PIL import Image
-
+from pprint import pprint
 
 # Set matplotlib backend based on display availability
 if os.environ.get('DISPLAY', '') == '':
@@ -265,7 +265,9 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
     print('DONE!')
 
 
-def test_exp(model_dir, out_dir, dataset_dir, draw=True, use_all=False, batch_size=None, exp_class_dict=None):
+def test_exp(model_dir, out_dir, dataset_dir, classes, draw=True, use_all=False, batch_size=None,
+             exp_class_dict=None, channels=None, ext='.jpg',
+             square_a=None, border=None):
     # Test experiment: load parameters, data and model for testing the segmentation model
     model_dir = Path(model_dir)
     out_dir = Path(out_dir)
@@ -278,13 +280,25 @@ def test_exp(model_dir, out_dir, dataset_dir, draw=True, use_all=False, batch_si
     if exp_class_dict is not None:
         p.exp_class_dict = exp_class_dict
 
+    if channels is not None:
+        p.channels = channels
+        
+    p.model_load_fp = model_dir / 'best_model.pth'
+
     if use_all:
         p.ratio_train = 0.0
         p.ratio_val = 0.0
         p.images_num = None
-    fp_data_list, aug_list, dataset_fn, dataset_test_fn = prepare_data_from_params(p,
+
+    pprint(vars(p))
+
+    if square_a is not None and border is not None:
+        p.square_a, p.border = square_a, border
+
+    fp_data_list, aug_list, dataset_fn, dataset_test_fn = prepare_data_from_params(p, classes,
                                                                                    shuffle=True,
-                                                                                   max_workers=1)
+                                                                                   max_workers=1,
+                                                                                   ext=ext, resize_coef=1)
 
     d = SimpleNamespace(fp_data_list=fp_data_list,
                         aug_list=aug_list,
@@ -314,11 +328,10 @@ def test_exp(model_dir, out_dir, dataset_dir, draw=True, use_all=False, batch_si
         activation=p.ACTIVATION,
     )
 
-    p.model_load_fp = model_dir / 'best_model.pth'
-
     # model = torch.load(p.model_load_fp)
     pretrained_dict = torch.load(str(p.model_load_fp)).state_dict()
 
+    # pretrained_dict = {k: v.cpu() for k, v in pretrained_dict.items()}
     model_dict = model.state_dict()
 
     keys_to_load = [k for k in pretrained_dict.keys() if
@@ -367,6 +380,10 @@ def test_exp(model_dir, out_dir, dataset_dir, draw=True, use_all=False, batch_si
     #     print(f"{' '.join(k.split('_')).title()}: {v:.2f}")
 
     model = model.to(p.DEVICE)
+
+    # torch.save(model, str(p.model_load_fp))
+    # exit()
+
     if draw:
         iou_metric_list = draw_and_save_results(
             out_dir, test_dataset, test_loader, model, p)
@@ -399,6 +416,7 @@ def draw_and_save_results(out_dir, test_dataset, test_loader, model, p):
     squares = test_dataset.squares
     border = test_dataset.border
 
+    plt.ioff()
     pbar = tqdm(total=int(len(test_loader.dataset) / len(squares)))
     for batch_idx, (x, y) in enumerate(test_loader):
         pred_y = model.predict(x.to(p.DEVICE))
