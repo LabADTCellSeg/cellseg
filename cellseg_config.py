@@ -16,15 +16,15 @@
 # square_a, border = None, None
 # # square_a, border = 1024, 0
 
-# exp = 'Microscopy_Ivan'
-# dataset_dir = 'datasets/Microscopy_Ivan'
-# exp_class_dict = {'25 wjMSC R1 (П57) p6 ctrl': 1,
-#                   '28 wjMSC R1 (П57) p6 H2O2 4h': 2}
-# classes = [1, 2, 3]
-# channels = ['b']
-# extension = '.jpg'
+exp = 'Microscopy_Ivan'
+dataset_dir = 'datasets/Microscopy_Ivan'
+exp_class_dict = {'25 wjMSC R1 (П57) p6 ctrl': 1,
+                  '28 wjMSC R1 (П57) p6 H2O2 4h': 2}
+classes = [1, 2, 3]
+channels = ['b']
+extension = '.jpg'
 # square_a, border = None, None
-# # square_a, border = 1024, 0
+square_a, border = 1024, 0
 
 # exp = 'MSC_conf'
 # dataset_dir = '/home/ivan/python/cellseg_export/datasets/2/MSC_conf'
@@ -49,23 +49,23 @@
 # extension = '.png'
 # square_a, border = 1024, 0
 
-exp = 'MSC_light'
-dataset_dir = '/home/ivan/python/cellseg_export/datasets/2/MSC_light'
-exp_class_dict = {'o1_p4_HPL': 3,
-                  'o1_p8_FBS': 3,
-                  'Vas_p4': 3,
-                  'Vas_p7': 3,
-                  'Vas_p8': 3,
-                  'y1_p8': 1,
-                  'y1_p11': 1,
-                  'Y99p3': 2,
-                  'Y99p5': 2,
-                  'Y99p8sl2': 2}
-classes = [1, 2, 3]
-channels = ['']
-extension = '.jpg'
-# square_a, border = None, None
-square_a, border = 1024, 0
+# exp = 'MSC_light'
+# dataset_dir = '/home/ivan/python/cellseg_export/datasets/2/MSC_light'
+# exp_class_dict = {'o1_p4_HPL': 3,
+#                   'o1_p8_FBS': 3,
+#                   'Vas_p4': 3,
+#                   'Vas_p7': 3,
+#                   'Vas_p8': 3,
+#                   'y1_p8': 1,
+#                   'y1_p11': 1,
+#                   'Y99p3': 2,
+#                   'Y99p5': 2,
+#                   'Y99p8sl2': 2}
+# classes = [1, 2, 3]
+# channels = ['']
+# extension = '.jpg'
+# # square_a, border = None, None
+# square_a, border = 1024, 0
 
 # Model
 

@@ -824,8 +824,8 @@ class CellDataset4Test(BaseDataset):
             if convert:
                 c_img = np.asarray(c_img.convert(convert))
             else:
-                # c_img = np.asarray(c_img)[..., c_idx]
-                c_img = np.asarray(c_img)[..., 2]  # TODO: Temporary solution. Only for blue png mode
+                c_img = np.asarray(c_img)[..., c_idx]
+                # c_img = np.asarray(c_img)[..., 2]  # TODO: Temporary solution. Only for blue png mode
 
             c_stack.append(c_img)
         return np.stack(c_stack, axis=-1)

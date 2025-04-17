@@ -54,7 +54,7 @@ if __name__ == '__main__':
     samples_to_analyze = list()
     for sample_data in all_fp_data:
         pred_mask_fp_list = [
-            str(v) for v in predicted_masks_dir.glob(f'{sample_data["idx"]}_*')]
+            str(v) for v in (predicted_masks_dir / sample_data['exp_dir']).glob(f'{sample_data["idx"]}_*')]
         pred_mask_fp_list.sort()
         if len(pred_mask_fp_list) > 0:
             samples_to_analyze.append([sample_data,

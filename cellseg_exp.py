@@ -448,6 +448,11 @@ def draw_and_save_results(out_dir, test_dataset, test_loader, model, p):
         # Process accumulated images once enough samples are collected
         if (len(img_list) >= len(squares)) or (batch_idx == len(test_loader) - 1):
             res_idx = info_list[0]['idx']
+            exp_dir = info_list[0]['exp_dir']
+            (out_dir / 'full' / exp_dir).mkdir(exist_ok=True)
+            (out_dir / 'compare' / exp_dir).mkdir(exist_ok=True)
+            (out_dir / 'predicted_masks' / exp_dir).mkdir(exist_ok=True)
+
             print(f'save results for: {res_idx}')
 
             assert all(
@@ -471,7 +476,7 @@ def draw_and_save_results(out_dir, test_dataset, test_loader, model, p):
                 img = Image.fromarray(restored_pr[idx].astype(np.uint8) * 255)
                 img = img.resize(test_loader.dataset.target_size)
                 img.save((out_dir / 'predicted_masks' /
-                         res_idx_name).with_suffix('.png'))
+                         exp_dir / res_idx_name).with_suffix('.png'))
 
             restored_gt_full = restored_gt[0]
             for idx in range(restored_gt.shape[0]):
@@ -493,7 +498,7 @@ def draw_and_save_results(out_dir, test_dataset, test_loader, model, p):
             ax[p.channels_num + 1].title.set_text('pr_mask')
 
             fig.savefig(
-                (out_dir / 'full' / res_idx).with_suffix('.png'), bbox_inches='tight')
+                (out_dir / 'full' / exp_dir/ res_idx).with_suffix('.png'), bbox_inches='tight')
             plt.close(fig)
 
             fig, ax = plt.subplots(1, 2, figsize=(w * 2, h))
@@ -547,7 +552,7 @@ def draw_and_save_results(out_dir, test_dataset, test_loader, model, p):
             ax[1].title.set_text('img_pr')
 
             fig.savefig(
-                (out_dir / 'compare' / res_idx).with_suffix('.png'), bbox_inches='tight')
+                (out_dir / 'compare' / exp_dir / res_idx).with_suffix('.png'), bbox_inches='tight')
             plt.close(fig)
 
             img_list = img_list[len(squares):]

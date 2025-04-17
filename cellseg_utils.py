@@ -47,7 +47,7 @@ def get_all_fp_data(exps_dir, exp_class_dict, channels, ext='.jpg', mask_ext = '
             m_fp = cur_exp_dir / m_fn
 
             sample_data = dict(cls=exp_class_dict[cur_exp],
-                               exp_dir=cur_exp_dir,
+                               exp_dir=Path(cur_exp_dir.name),
                                idx=idx,
                                mask_fp=m_fp)
             for c in channels + ['p']:
