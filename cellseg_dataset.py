@@ -18,6 +18,56 @@ import albumentations as A
 from cellseg_utils import get_all_fp_data
 
 
+def read_image(fp_data, channels=None, convert=None):
+    """Reads an image from file pointers for the specified channels."""
+    if channels is None:
+        channels = ['r', 'g', 'b']
+
+    channel_idx = {'r': 0, 'g': 1, 'b': 2, 'mask': 0, 'p': None}
+    c_stack = []
+    for c_idx, c in enumerate(channels):
+        if f'{c}_fp' in fp_data.keys() and Path(fp_data[f'{c}_fp']).exists():
+            c_img = Image.open(fp_data[f'{c}_fp'])
+        else:
+            return None
+        if convert:
+            c_img = np.asarray(c_img.convert(convert))
+        else:
+            c_img = np.asarray(c_img)[..., channel_idx[c]]  # new solution
+            # c_img = np.asarray(c_img)[..., c_idx]  # old solution
+            # c_img = np.asarray(c_img)[..., 2]  # temporary solution. Only for blue png mode
+
+        c_stack.append(c_img)
+
+    img_np = np.stack(c_stack, axis=-1)
+
+    return img_np
+
+
+def read_mask(fp_data):
+    """Reads mask image using the 'mask' channel"""
+    return read_image(fp_data, channels=['mask'])
+
+
+def read_shadow(fp_data):
+    # Reads shadow image using the 'p' channel and converts to grayscale
+    return read_image(fp_data, channels=['p'], convert='L')
+
+
+def prepare_mask(mask, cls_num=1, cls=0, contour_thickness=2):
+    """Prepares the mask: finds contours and creates an extra channel for the contour."""
+    mask_contour = mask.copy()
+    contours, _ = cv2.findContours(mask_contour,
+                                   cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    _ = cv2.drawContours(mask_contour, contours, contourIdx=-1, color=[2], thickness=contour_thickness)
+    mask = np.zeros((mask.shape[0], mask.shape[1], cls_num + 1), dtype=mask.dtype)
+    mask[..., cls:cls + 1][mask_contour == 1] = 1
+    mask[..., cls_num:cls_num + 1][mask_contour == 2] = 1
+
+    return mask
+
+
 class CellDataset4(BaseDataset):
     def __init__(
             self,
@@ -74,29 +124,38 @@ class CellDataset4(BaseDataset):
                 self.channels_num += 1
 
     def process_fp_data(self, fp_data):
-        """Processes a single data object.
-
-        Reads the image and mask, prepares the mask (optionally with contours),
-        splits the image into squares if required, and returns lists of images, masks, shadows, and info.
         """
-        img = self.read_image(fp_data, channels=self.channels)
-        mask = self.read_mask(fp_data) // 255
+        Loads the image and mask, performs initial processing, and splits them into squares if required.
+        Returns lists of images, masks, shadows, and infos (a dictionary containing fp_data fields and 'sq' information).
+        """
+        img = read_image(fp_data, channels=self.channels)
+        mask = read_mask(fp_data)
+        if mask is None:
+            # if self.classes is not None:
+            #     mask_dim = len(self.classes)
+            # else:
+            #     mask_dim = 1
+            mask = np.zeros((img.shape[0], img.shape[1], 1), dtype=np.uint8)
+        else:
+            mask = mask // 255
+
         assert img.shape[:-1] == mask.shape[:-1]
 
         if self.classes is not None:
-            mask = self._prepare_mask(mask, cls_num=len(self.classes), cls=self.classes.index(fp_data['cls']),
+            mask = prepare_mask(mask, cls_num=len(self.classes),
+                                      cls=self.classes.index(fp_data['cls']),
                                       contour_thickness=self.contour_thickness)
         else:
-            mask = self._prepare_mask(mask, cls_num=1, cls=0, contour_thickness=self.contour_thickness)
-        shadow = self.read_shadow(fp_data)[..., 0:1] if self.add_shadow_to_img else None
+            mask = prepare_mask(mask, cls_num=1, cls=0,
+                                      contour_thickness=self.contour_thickness)
+        shadow = read_shadow(fp_data)[..., 0:1] if self.add_shadow_to_img else None
 
-        result_images, result_masks, result_shadows, result_info = [], [], [], []
+        result_images, result_masks, result_shadows, result_infos = [], [], [], []
 
         if all(v is not None for v in [self.full_size, self.squares, self.border]):
-            # Split the image and mask into squares
+            # Split image and mask into squares.
             _, img_sq_list = split_image(img, self.full_size, self.squares, self.border)
             _, mask_sq_list = split_image(mask, self.full_size, self.squares, self.border)
-
             if self.add_shadow_to_img:
                 _, shadow_sq_list = split_image(shadow, self.full_size, self.squares, self.border)
             else:
@@ -106,17 +165,14 @@ class CellDataset4(BaseDataset):
                 result_images.append(img_sq)
                 result_masks.append(msk_sq.astype(np.bool_))
                 result_shadows.append(shd_sq)
-
-                squares_info = dict(sq=sq)
-                squares_info.update(fp_data)
-                result_info.append(squares_info)
+                result_infos.append(dict(sq=sq, **fp_data))
         else:
             result_images.append(img)
             result_masks.append(mask.astype(np.bool_))
             result_shadows.append(shadow)
-            result_info.append(fp_data)
+            result_infos.append(fp_data)
 
-        return result_images, result_masks, result_shadows, result_info
+        return result_images, result_masks, result_shadows, result_infos
 
     def default_processing(self):
         # Sequentially process each file pointer data and extend the dataset lists
@@ -141,89 +197,29 @@ class CellDataset4(BaseDataset):
                 except Exception as e:
                     print(f"Error processing data: {e}")
 
-    @staticmethod
-    def read_image(fp_data, channels=None, convert=None):
-        """Reads an image from file pointers for the specified channels."""
-        if channels is None:
-            channels = ['r', 'g', 'b']
-
-        c_stack = list()
-        for c_idx, c in enumerate(channels):
-            c_img = Image.open(fp_data[f'{c}_fp'])
-
-            # Optionally convert image if needed
-            # if self.target_size:
-            #     if self.target_size[0] != c_img.size[0] or self.target_size[1] != c_img.size[1]:
-            #         c_img = c_img.resize(self.target_size)
-            # else:
-            #     new_width = c_img.size[0] // 32 * 32
-            #     new_height = c_img.size[1] // 32 * 32
-            #     if new_width != c_img.size[0] or new_height != c_img.size[1]:
-            #         c_img = c_img.resize((new_width, new_height))
-
-            if convert:
-                c_img = np.asarray(c_img.convert(convert))
-            else:
-                # Extract the channel using the index if no conversion is applied
-                c_img = np.asarray(c_img)[..., c_idx]
-            c_stack.append(c_img)
-
-        img_np = np.stack(c_stack, axis=-1)
-
-        return img_np
-
-    @staticmethod
-    def read_mask(fp_data):
-        # Reads mask image using the 'mask' channel
-        return CellDataset4.read_image(fp_data, channels=['mask'])
-
-    @staticmethod
-    def read_shadow(fp_data):
-        # Reads shadow image using the 'p' channel and converts to grayscale
-        return CellDataset4.read_image(fp_data, channels=['p'], convert='L')
-
-    @staticmethod
-    def _prepare_mask(mask, cls_num=1, cls=0, contour_thickness=2):
-        """Prepares the mask: finds contours and creates an extra channel for the contour."""
-        mask_contour = mask.copy()
-        contours, _ = cv2.findContours(mask_contour,
-                                       cv2.RETR_EXTERNAL,
-                                       cv2.CHAIN_APPROX_SIMPLE)
-        _ = cv2.drawContours(mask_contour, contours, contourIdx=-1, color=[2], thickness=contour_thickness)
-        mask = np.zeros((mask.shape[0], mask.shape[1], cls_num + 1), dtype=mask.dtype)
-        mask[..., cls:cls + 1][mask_contour == 1] = 1
-        mask[..., cls_num:cls_num + 1][mask_contour == 2] = 1
-
-        return mask
-
     def aug(self, img, mask, shadow=False):
-        """Applies augmentation and/or preprocessing if specified.
-        If shadow is provided, it is added as an extra channel.
+        """
+        Applies augmentation and/or preprocessing if provided.
+        If shadow is present, it is added as an extra channel.
         """
         if self.augmentation or self.preprocessing:
             mask = mask.astype(np.uint8)
-
             if shadow is None:
                 if self.augmentation:
                     sample = self.augmentation(image=img, mask=mask)
                     img, mask = sample['image'], sample['mask']
-
                 if self.preprocessing:
                     sample = self.preprocessing(image=img, mask=mask)
                     img, mask = sample['image'], sample['mask']
-
             else:
                 if self.augmentation:
                     sample = self.augmentation(image=img, mask=mask, shadow=shadow)
                     img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
-
                 if self.preprocessing:
                     sample = self.preprocessing(image=img, mask=mask, shadow=shadow)
                     img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
-
-                # Combine the shadow channel with the image if provided (assumes shadow has one channel)
+                # Add additional channel for shadow (if shadow has 1 channel)
                 img = np.dstack([img, shadow[..., 0]])
-
             return img / 255, mask
         else:
             return img / 255, mask
@@ -239,413 +235,7 @@ class CellDataset4(BaseDataset):
         return len(self.images)
 
 
-class CellDataset4Test1(BaseDataset):
-    def __init__(
-            self,
-            all_fp_data,
-            full_size=None,
-            add_shadow_to_img=False,
-            squares=None,
-            border=None,
-            classes=None,
-            channels=['r', 'g', 'b'],
-            augmentation=None,
-            preprocessing=None,
-            target_size=None,
-            contour_thickness=2
-    ):
-        """
-        Parameters are similar to the original dataset but data is not precomputed.
-        Building a mapping by indices allows dynamically loading the required square.
-        """
-        self.all_fp_data = all_fp_data
-        self.full_size = full_size
-        self.add_shadow_to_img = add_shadow_to_img
-        self.squares = squares
-        self.border = border if border is not None else 0
-        self.classes = classes
-        self.channels = channels
-        self.augmentation = augmentation
-        self.preprocessing = preprocessing
-        self.target_size = target_size
-        self.contour_thickness = contour_thickness
-
-        # Build a mapping: for each global index, store a tuple (fp_data index, square index within the image)
-        self.mapping = []
-        for fp_idx, fp in enumerate(self.all_fp_data):
-            if self.full_size is not None and self.squares is not None:
-                # If splitting into squares is performed, add as many entries as there are squares
-                for sq_idx, _ in enumerate(self.squares):
-                    self.mapping.append((fp_idx, sq_idx))
-            else:
-                # If no splitting is needed, one entry per image
-                self.mapping.append((fp_idx, None))
-
-        # For speeding up sequential iteration: cache the last loaded file.
-        self._cached_fp_index = None
-        self._cached_data = None  # Will store a tuple (images, masks, shadows, info)
-
-    def __len__(self):
-        return len(self.mapping)
-
-    def __getitem__(self, index):
-        """
-        Returns the image and mask corresponding to the given index.
-        Uses cache if the file is already loaded; otherwise, loads the data.
-        After retrieving the last square for a file, clears the cache to release memory.
-        """
-        fp_idx, square_idx = self.mapping[index]
-
-        # Use cache if available
-        if self._cached_fp_index == fp_idx:
-            images, masks, shadows, info = self._cached_data
-        else:
-            fp_data = self.all_fp_data[fp_idx]
-            images, masks, shadows, info = self.process_fp_data(fp_data)
-            self._cached_fp_index = fp_idx
-            self._cached_data = (images, masks, shadows, info)
-
-        # Select the specific square or full image if no splitting is applied.
-        if square_idx is not None:
-            img = images[square_idx]
-            mask = masks[square_idx]
-            shadow = shadows[square_idx]
-        else:
-            img = images[0]
-            mask = masks[0]
-            shadow = shadows[0]
-
-        # Apply augmentation/preprocessing if specified
-        img_aug, mask_aug = self.aug(img, mask, shadow=shadow)
-        result = (img_aug.transpose(2, 0, 1).astype(np.float32),
-                  mask_aug.transpose(2, 0, 1).astype(np.float32))
-
-        # Clear cache if the current square is the last one for this file or it is the last element in the dataset
-        if index == len(self.mapping) - 1 or self.mapping[index + 1][0] != fp_idx:
-            self._cached_fp_index = None
-            self._cached_data = None
-
-        return result
-
-    def process_fp_data(self, fp_data):
-        """
-        Loads the image and mask, applies initial processing,
-        and splits them into squares if necessary.
-        Returns lists of images, masks, shadows, and info (a dictionary with fp_data fields and square info).
-        """
-        img = self.read_image(fp_data, channels=self.channels)
-        mask = self.read_mask(fp_data) // 255
-        assert img.shape[:-1] == mask.shape[:-1]
-
-        if self.classes is not None:
-            mask = self._prepare_mask(mask, cls_num=len(self.classes),
-                                      cls=self.classes.index(fp_data['cls']),
-                                      contour_thickness=self.contour_thickness)
-        else:
-            mask = self._prepare_mask(mask, cls_num=1, cls=0,
-                                      contour_thickness=self.contour_thickness)
-        shadow = self.read_shadow(fp_data)[..., 0:1] if self.add_shadow_to_img else None
-
-        result_images, result_masks, result_shadows, result_info = [], [], [], []
-
-        if all(v is not None for v in [self.full_size, self.squares, self.border]):
-            # Split the image and mask into squares.
-            _, img_sq_list = split_image(img, self.full_size, self.squares, self.border)
-            _, mask_sq_list = split_image(mask, self.full_size, self.squares, self.border)
-            if self.add_shadow_to_img:
-                _, shadow_sq_list = split_image(shadow, self.full_size, self.squares, self.border)
-            else:
-                shadow_sq_list = [None] * len(img_sq_list)
-
-            for img_sq, msk_sq, shd_sq, sq in zip(img_sq_list, mask_sq_list, shadow_sq_list, self.squares):
-                result_images.append(img_sq)
-                result_masks.append(msk_sq.astype(np.bool_))
-                result_shadows.append(shd_sq)
-                result_info.append(dict(sq=sq, **fp_data))
-        else:
-            result_images.append(img)
-            result_masks.append(mask.astype(np.bool_))
-            result_shadows.append(shadow)
-            result_info.append(fp_data)
-
-        return result_images, result_masks, result_shadows, result_info
-
-    @staticmethod
-    def read_image(fp_data, channels=None, convert=None):
-        """
-        Reads an image from file pointers for the specified channels.
-        """
-        if channels is None:
-            channels = ['r', 'g', 'b']
-
-        c_stack = []
-        for c_idx, c in enumerate(channels):
-            c_img = Image.open(fp_data[f'{c}_fp'])
-            if convert:
-                c_img = np.asarray(c_img.convert(convert))
-            else:
-                c_img = np.asarray(c_img)[..., c_idx]
-            c_stack.append(c_img)
-        return np.stack(c_stack, axis=-1)
-
-    @staticmethod
-    def read_mask(fp_data):
-        return CellDataset4Test.read_image(fp_data, channels=['mask'])
-
-    @staticmethod
-    def read_shadow(fp_data):
-        return CellDataset4Test.read_image(fp_data, channels=['p'], convert='L')
-
-    @staticmethod
-    def _prepare_mask(mask, cls_num=1, cls=0, contour_thickness=2):
-        """
-        Processes the mask by finding contours and creating an extra channel for the contour.
-        """
-        mask_contour = mask.copy()
-        contours, _ = cv2.findContours(mask_contour,
-                                       cv2.RETR_EXTERNAL,
-                                       cv2.CHAIN_APPROX_SIMPLE)
-        _ = cv2.drawContours(mask_contour, contours, contourIdx=-1, color=[2], thickness=contour_thickness)
-        mask_prepared = np.zeros((mask.shape[0], mask.shape[1], cls_num + 1),
-                                 dtype=mask.dtype)
-        mask_prepared[..., cls:cls + 1][mask_contour == 1] = 1
-        mask_prepared[..., cls_num:cls_num + 1][mask_contour == 2] = 1
-        return mask_prepared
-
-    def aug(self, img, mask, shadow=False):
-        """
-        Applies augmentation and/or preprocessing if provided.
-        If a shadow is provided, adds it as an extra channel.
-        """
-        if self.augmentation or self.preprocessing:
-            mask = mask.astype(np.uint8)
-            if shadow is None:
-                if self.augmentation:
-                    sample = self.augmentation(image=img, mask=mask)
-                    img, mask = sample['image'], sample['mask']
-                if self.preprocessing:
-                    sample = self.preprocessing(image=img, mask=mask)
-                    img, mask = sample['image'], sample['mask']
-            else:
-                if self.augmentation:
-                    sample = self.augmentation(image=img, mask=mask, shadow=shadow)
-                    img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
-                if self.preprocessing:
-                    sample = self.preprocessing(image=img, mask=mask, shadow=shadow)
-                    img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
-                # Add an extra channel for shadow (assuming shadow has 1 channel)
-                img = np.dstack([img, shadow[..., 0]])
-            return img / 255, mask
-        else:
-            return img / 255, mask
-
-
-class CellDataset4Test2(BaseDataset):
-    def __init__(
-            self,
-            all_fp_data,
-            full_size=None,
-            add_shadow_to_img=False,
-            squares=None,
-            border=None,
-            classes=None,
-            channels=['r', 'g', 'b'],
-            augmentation=None,
-            preprocessing=None,
-            target_size=None,
-            contour_thickness=2
-    ):
-        """
-        Similar to the original dataset but data is not precomputed.
-        Builds a mapping from global index to (fp_data index, square index) to dynamically load the required square.
-        Implements caching for multiple files and a mechanism to free memory once all squares for a file are requested.
-        """
-        self.all_fp_data = all_fp_data
-        self.full_size = full_size
-        self.add_shadow_to_img = add_shadow_to_img
-        self.squares = squares
-        self.border = border if border is not None else 0
-        self.classes = classes
-        self.channels = channels
-        self.augmentation = augmentation
-        self.preprocessing = preprocessing
-        self.target_size = target_size
-        self.contour_thickness = contour_thickness
-
-        # Build mapping: for each global index, record (fp_data index, square index within the image)
-        self.mapping = []
-        # Also determine for each fp_data the total number of squares to be requested
-        self.file_total_counts = {}
-        for fp_idx, fp in enumerate(self.all_fp_data):
-            if self.full_size is not None and self.squares is not None:
-                num_sq = len(self.squares)
-                for sq_idx in range(num_sq):
-                    self.mapping.append((fp_idx, sq_idx))
-                self.file_total_counts[fp_idx] = num_sq
-            else:
-                self.mapping.append((fp_idx, None))
-                self.file_total_counts[fp_idx] = 1
-
-        # Use a dictionary for caching to support multiple simultaneously loaded files.
-        self._cache = {}         # key: fp_index, value: (images, masks, shadows, info)
-        self._cache_usage = {}   # key: fp_index, value: number of squares already returned
-
-    def __len__(self):
-        return len(self.mapping)
-
-    def __getitem__(self, index):
-        """
-        Returns the image and mask for the given index.
-         - If the file data is cached, returns the cached data.
-         - After the required number of squares for a file have been returned, the cache for that file is freed.
-         - The corresponding info field is stored in self.info for later use in visualizations.
-        """
-        fp_idx, square_idx = self.mapping[index]
-
-        # Load data from cache if available for this fp_idx.
-        if fp_idx in self._cache:
-            images, masks, shadows, info = self._cache[fp_idx]
-        else:
-            fp_data = self.all_fp_data[fp_idx]
-            images, masks, shadows, info = self.process_fp_data(fp_data)
-            self._cache[fp_idx] = (images, masks, shadows, info)
-            self._cache_usage[fp_idx] = 0
-
-        # If splitting is applied, choose the specified square; otherwise, use the full image.
-        if square_idx is not None:
-            img = images[square_idx]
-            mask = masks[square_idx]
-            shadow = shadows[square_idx]
-        else:
-            img = images[0]
-            mask = masks[0]
-            shadow = shadows[0]
-
-        # Apply augmentation/preprocessing if specified.
-        img_aug, mask_aug = self.aug(img, mask, shadow=shadow)
-        result = (img_aug.transpose(2, 0, 1).astype(np.float32),
-                  mask_aug.transpose(2, 0, 1).astype(np.float32))
-
-        # Update info for the current index if needed.
-        self.info[index] = info
-
-        # Update cache usage count and free cache if all expected squares are served.
-        self._cache_usage[fp_idx] += 1
-        if self._cache_usage[fp_idx] >= self.file_total_counts[fp_idx]:
-            del self._cache[fp_idx]
-            del self._cache_usage[fp_idx]
-
-        return result
-
-    def process_fp_data(self, fp_data):
-        """
-        Loads the image and mask, performs initial processing, and splits them into squares if necessary.
-        Returns lists of images, masks, shadows, and info (a dictionary with fp_data fields and 'sq' parameter).
-        """
-        img = self.read_image(fp_data, channels=self.channels)
-        mask = self.read_mask(fp_data) // 255
-        assert img.shape[:-1] == mask.shape[:-1]
-
-        if self.classes is not None:
-            mask = self._prepare_mask(mask, cls_num=len(self.classes), cls=self.classes.index(fp_data['cls']),
-                                      contour_thickness=self.contour_thickness)
-        else:
-            mask = self._prepare_mask(mask, cls_num=1, cls=0,
-                                      contour_thickness=self.contour_thickness)
-        shadow = self.read_shadow(fp_data)[..., 0:1] if self.add_shadow_to_img else None
-
-        result_images, result_masks, result_shadows, result_info = [], [], [], []
-
-        if all(v is not None for v in [self.full_size, self.squares, self.border]):
-            # Split the image and mask into squares.
-            _, img_sq_list = split_image(img, self.full_size, self.squares, self.border)
-            _, mask_sq_list = split_image(mask, self.full_size, self.squares, self.border)
-            if self.add_shadow_to_img:
-                _, shadow_sq_list = split_image(shadow, self.full_size, self.squares, self.border)
-            else:
-                shadow_sq_list = [None] * len(img_sq_list)
-
-            for img_sq, msk_sq, shd_sq, sq in zip(img_sq_list, mask_sq_list, shadow_sq_list, self.squares):
-                result_images.append(img_sq)
-                result_masks.append(msk_sq.astype(np.bool_))
-                result_shadows.append(shd_sq)
-                result_info.append(dict(sq=sq, **fp_data))
-
-        else:
-            result_images.append(img)
-            result_masks.append(mask.astype(np.bool_))
-            result_shadows.append(shadow)
-            result_info.append(fp_data)
-
-        return result_images, result_masks, result_shadows, result_info
-
-    @staticmethod
-    def read_image(fp_data, channels=None, convert=None):
-        """
-        Reads an image from file pointers for the specified channels.
-        """
-        if channels is None:
-            channels = ['r', 'g', 'b']
-        c_stack = []
-        for c_idx, c in enumerate(channels):
-            c_img = Image.open(fp_data[f'{c}_fp'])
-            if convert:
-                c_img = np.asarray(c_img.convert(convert))
-            else:
-                c_img = np.asarray(c_img)[..., c_idx]
-            c_stack.append(c_img)
-        return np.stack(c_stack, axis=-1)
-
-    @staticmethod
-    def read_mask(fp_data):
-        return CellDataset4Test.read_image(fp_data, channels=['mask'])
-
-    @staticmethod
-    def read_shadow(fp_data):
-        return CellDataset4Test.read_image(fp_data, channels=['p'], convert='L')
-
-    @staticmethod
-    def _prepare_mask(mask, cls_num=1, cls=0, contour_thickness=2):
-        """
-        Extracts contours from the mask and creates an extra channel for the contour.
-        """
-        mask_contour = mask.copy()
-        contours, _ = cv2.findContours(mask_contour, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        _ = cv2.drawContours(mask_contour, contours, contourIdx=-1, color=[2], thickness=contour_thickness)
-        mask_prepared = np.zeros((mask.shape[0], mask.shape[1], cls_num + 1), dtype=mask.dtype)
-        mask_prepared[..., cls:cls + 1][mask_contour == 1] = 1
-        mask_prepared[..., cls_num:cls_num + 1][mask_contour == 2] = 1
-        return mask_prepared
-
-    def aug(self, img, mask, shadow=False):
-        """
-        Applies augmentation and/or preprocessing if provided.
-        If shadow is available, adds it as an extra channel.
-        """
-        if self.augmentation or self.preprocessing:
-            mask = mask.astype(np.uint8)
-            if shadow is None:
-                if self.augmentation:
-                    sample = self.augmentation(image=img, mask=mask)
-                    img, mask = sample['image'], sample['mask']
-                if self.preprocessing:
-                    sample = self.preprocessing(image=img, mask=mask)
-                    img, mask = sample['image'], sample['mask']
-            else:
-                if self.augmentation:
-                    sample = self.augmentation(image=img, mask=mask, shadow=shadow)
-                    img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
-                if self.preprocessing:
-                    sample = self.preprocessing(image=img, mask=mask, shadow=shadow)
-                    img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
-                # Add an extra channel for shadow (if shadow has 1 channel)
-                img = np.dstack([img, shadow[..., 0]])
-            return img / 255, mask
-        else:
-            return img / 255, mask
-
-
-class CellDataset4Test(BaseDataset):
+class CellDataset4Test(CellDataset4):
     def __init__(
             self,
             all_fp_data,
@@ -756,127 +346,6 @@ class CellDataset4Test(BaseDataset):
             del self._cache_usage[fp_idx]
 
         return result
-
-    def process_fp_data(self, fp_data):
-        """
-        Loads the image and mask, performs initial processing, and splits them into squares if required.
-        Returns lists of images, masks, shadows, and infos (a dictionary containing fp_data fields and 'sq' information).
-        """
-        img = self.read_image(fp_data, channels=self.channels)
-        mask = self.read_mask(fp_data)
-        if mask is None:
-            # if self.classes is not None:
-            #     mask_dim = len(self.classes)
-            # else:
-            #     mask_dim = 1
-            mask = np.zeros((img.shape[0], img.shape[1], 1), dtype=np.uint8)
-        else:
-            mask = mask // 255
-
-        assert img.shape[:-1] == mask.shape[:-1]
-
-        if self.classes is not None:
-            mask = self._prepare_mask(mask, cls_num=len(self.classes),
-                                      cls=self.classes.index(fp_data['cls']),
-                                      contour_thickness=self.contour_thickness)
-        else:
-            mask = self._prepare_mask(mask, cls_num=1, cls=0,
-                                      contour_thickness=self.contour_thickness)
-        shadow = self.read_shadow(fp_data)[..., 0:1] if self.add_shadow_to_img else None
-
-        result_images, result_masks, result_shadows, result_infos = [], [], [], []
-
-        if all(v is not None for v in [self.full_size, self.squares, self.border]):
-            # Split image and mask into squares.
-            _, img_sq_list = split_image(img, self.full_size, self.squares, self.border)
-            _, mask_sq_list = split_image(mask, self.full_size, self.squares, self.border)
-            if self.add_shadow_to_img:
-                _, shadow_sq_list = split_image(shadow, self.full_size, self.squares, self.border)
-            else:
-                shadow_sq_list = [None] * len(img_sq_list)
-
-            for img_sq, msk_sq, shd_sq, sq in zip(img_sq_list, mask_sq_list, shadow_sq_list, self.squares):
-                result_images.append(img_sq)
-                result_masks.append(msk_sq.astype(np.bool_))
-                result_shadows.append(shd_sq)
-                result_infos.append(dict(sq=sq, **fp_data))
-        else:
-            result_images.append(img)
-            result_masks.append(mask.astype(np.bool_))
-            result_shadows.append(shadow)
-            result_infos.append(fp_data)
-
-        return result_images, result_masks, result_shadows, result_infos
-
-    @staticmethod
-    def read_image(fp_data, channels=None, convert=None):
-        """
-        Reads an image from file pointers for the specified channels.
-        """
-        if channels is None:
-            channels = ['r', 'g', 'b']
-        c_stack = []
-        for c_idx, c in enumerate(channels):
-            if f'{c}_fp' in fp_data.keys() and Path(fp_data[f'{c}_fp']).exists():
-                c_img = Image.open(fp_data[f'{c}_fp'])
-            else:
-                return None
-            if convert:
-                c_img = np.asarray(c_img.convert(convert))
-            else:
-                c_img = np.asarray(c_img)[..., c_idx]
-                # c_img = np.asarray(c_img)[..., 2]  # TODO: Temporary solution. Only for blue png mode
-
-            c_stack.append(c_img)
-        return np.stack(c_stack, axis=-1)
-
-    @staticmethod
-    def read_mask(fp_data):
-        return CellDataset4Test.read_image(fp_data, channels=['mask'])
-
-    @staticmethod
-    def read_shadow(fp_data):
-        return CellDataset4Test.read_image(fp_data, channels=['p'], convert='L')
-
-    @staticmethod
-    def _prepare_mask(mask, cls_num=1, cls=0, contour_thickness=2):
-        """
-        Extracts contours from the mask and creates an extra channel for the contour.
-        """
-        mask_contour = mask.copy()
-        contours, _ = cv2.findContours(mask_contour, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        _ = cv2.drawContours(mask_contour, contours, contourIdx=-1, color=[2], thickness=contour_thickness)
-        mask_prepared = np.zeros((mask.shape[0], mask.shape[1], cls_num + 1), dtype=mask.dtype)
-        mask_prepared[..., cls:cls + 1][mask_contour == 1] = 1
-        mask_prepared[..., cls_num:cls_num + 1][mask_contour == 2] = 1
-        return mask_prepared
-
-    def aug(self, img, mask, shadow=False):
-        """
-        Applies augmentation and/or preprocessing if provided.
-        If shadow is present, it is added as an extra channel.
-        """
-        if self.augmentation or self.preprocessing:
-            mask = mask.astype(np.uint8)
-            if shadow is None:
-                if self.augmentation:
-                    sample = self.augmentation(image=img, mask=mask)
-                    img, mask = sample['image'], sample['mask']
-                if self.preprocessing:
-                    sample = self.preprocessing(image=img, mask=mask)
-                    img, mask = sample['image'], sample['mask']
-            else:
-                if self.augmentation:
-                    sample = self.augmentation(image=img, mask=mask, shadow=shadow)
-                    img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
-                if self.preprocessing:
-                    sample = self.preprocessing(image=img, mask=mask, shadow=shadow)
-                    img, mask, shadow = sample['image'], sample['mask'], sample['shadow']
-                # Add additional channel for shadow (if shadow has 1 channel)
-                img = np.dstack([img, shadow[..., 0]])
-            return img / 255, mask
-        else:
-            return img / 255, mask
 
 
 class ApplyToImageOnly(A.ImageOnlyTransform):

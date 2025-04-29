@@ -287,13 +287,14 @@ def test_exp(model_dir, out_dir, dataset_dir, classes, draw=True, use_all=False,
 
     if use_all:
         p.ratio_train = 0.0
-        p.ratio_val = 0.0
+        p.ratio_val = 1.0
         p.images_num = None
 
-    pprint(vars(p))
 
     if square_a is not None and border is not None:
         p.square_a, p.border = square_a, border
+
+    pprint(vars(p))
 
     fp_data_list, aug_list, dataset_fn, dataset_test_fn = prepare_data_from_params(p, classes,
                                                                                    shuffle=True,
@@ -304,9 +305,11 @@ def test_exp(model_dir, out_dir, dataset_dir, classes, draw=True, use_all=False,
                         aug_list=aug_list,
                         dataset_fn=dataset_test_fn)
 
+    # d.fp_data_list.valid = d.fp_data_list.valid[:10]  # for debug
+
     if batch_size:
         p.batch_size = batch_size
-    test_dataset = d.dataset_fn(d.fp_data_list.test, d.aug_list.test)
+    test_dataset = d.dataset_fn(d.fp_data_list.valid, d.aug_list.test)
     test_loader = DataLoader(test_dataset, batch_size=p.batch_size,
                              shuffle=False, num_workers=1, drop_last=True)
 
@@ -344,6 +347,7 @@ def test_exp(model_dir, out_dir, dataset_dir, classes, draw=True, use_all=False,
     model.load_state_dict(model_dict)
 
     print(f'loaded {p.model_load_fp}')
+    model = model.to(p.DEVICE)
 
     summary(model)
 
@@ -378,8 +382,6 @@ def test_exp(model_dir, out_dir, dataset_dir, classes, draw=True, use_all=False,
     # test_logs = test_epoch.run(test_loader)
     # for k, v in test_logs.items():
     #     print(f"{' '.join(k.split('_')).title()}: {v:.2f}")
-
-    model = model.to(p.DEVICE)
 
     # torch.save(model, str(p.model_load_fp))
     # exit()
