@@ -47,11 +47,11 @@ def experiment(run_clear_ml=False, p=None, d=None, log_dir=None, draw=True):
     if p.max_epochs != -1:
         train_dataset = d.dataset_fn(d.fp_data_list.train, d.aug_list.train)
         train_loader = DataLoader(train_dataset, batch_size=p.batch_size,
-                                  shuffle=True, num_workers=p.num_workers, drop_last=True)
+                                  shuffle=True, num_workers=p.num_workers, drop_last=False)
 
         valid_dataset = d.dataset_fn(d.fp_data_list.valid, d.aug_list.valid)
         valid_loader = DataLoader(valid_dataset, batch_size=p.batch_size,
-                                  shuffle=False, num_workers=p.num_workers, drop_last=True)
+                                  shuffle=False, num_workers=p.num_workers, drop_last=False)
     else:
         train_loader = None
         valid_loader = None
@@ -311,7 +311,7 @@ def test_exp(model_dir, out_dir, dataset_dir, classes, draw=True, use_all=False,
         p.batch_size = batch_size
     test_dataset = d.dataset_fn(d.fp_data_list.valid, d.aug_list.test)
     test_loader = DataLoader(test_dataset, batch_size=p.batch_size,
-                             shuffle=False, num_workers=1, drop_last=True)
+                             shuffle=False, num_workers=1, drop_last=False)
 
     # Function to freeze layers by name (if needed)
     def freeze_layers_by_name(model, layer_names):
